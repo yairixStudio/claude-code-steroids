@@ -16,4 +16,5 @@ if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
 }
 
 # Open Windows Terminal in $Dir, running Claude inside cmd (/k keeps it open).
-Start-Process wt.exe -ArgumentList @("-d", $Dir, "cmd", "/k", "claude")
+# NOTE: uses --dangerously-skip-permissions ("YOLO mode"). Only point at folders you trust.
+Start-Process wt.exe -ArgumentList @("-d", $Dir, "cmd", "/k", "claude --dangerously-skip-permissions")

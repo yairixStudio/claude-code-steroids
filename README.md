@@ -6,6 +6,11 @@ A tiny, no-dependency add-on for **macOS** and **Windows** that puts Claude Code
 right-click away. Stop opening a terminal, `cd`-ing into your project, and typing
 `claude` every single time. Just right-click the folder.
 
+> [!WARNING]
+> **Both** menu items launch Claude with `--dangerously-skip-permissions` ("YOLO mode") —
+> Claude can read, edit, and run commands **without asking for confirmation**.
+> Only use this on folders and projects you trust. See [the safety note](#-a-note-on---dangerously-skip-permissions) below.
+
 [![Platform: macOS](https://img.shields.io/badge/macOS-Quick%20Actions-black?logo=apple)](#-install--macos)
 [![Platform: Windows](https://img.shields.io/badge/Windows-PowerShell-blue?logo=windows)](#-install--windows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -18,8 +23,10 @@ It adds **two** entries to your folder right-click menu:
 
 | Menu item | What happens |
 |-----------|--------------|
-| **Open in Claude** | Opens one terminal in that folder and starts Claude Code. |
-| **Open in Claude — Steroids (9×)** | Opens **9 Claude Code sessions at once**, tiled in a **3×3 grid** over your screen, all pointed at that folder. |
+| **Open in Claude** | Opens one terminal in that folder and starts Claude Code (YOLO mode). |
+| **Open in Claude — Steroids (9×)** | Opens **9 Claude Code sessions at once**, tiled in a **3×3 grid** over your screen, all pointed at that folder (YOLO mode). |
+
+> Both run with `--dangerously-skip-permissions`. See the [safety note](#-a-note-on---dangerously-skip-permissions).
 
 ```
    Steroids Mode = 9 Claude sessions, one folder, one click
@@ -95,11 +102,19 @@ Everything is plain text and easy to audit — read the `macos/` and `windows/` 
 
 ## ⚠️ A note on `--dangerously-skip-permissions`
 
-Steroids Mode launches Claude with `--dangerously-skip-permissions` (a.k.a. “YOLO mode”),
-so nine agents can run without stopping to ask. **Only point it at folders/projects you
-trust.** The plain **“Open in Claude”** action runs Claude normally, with its usual prompts.
+**Both** actions — *Open in Claude* and *Steroids (9×)* — launch Claude with
+`--dangerously-skip-permissions` (a.k.a. **“YOLO mode”**). That means Claude will **read,
+edit, and execute commands in that folder without stopping to ask for permission** — and in
+Steroids Mode, nine agents do it at once.
 
-Want both actions to behave the same? It's a one-line edit in the scripts — see the comments.
+**Use it only on folders and projects you trust.** Don't point it at code you just
+downloaded, a client's repo you haven't reviewed, or anything where an unattended command
+could do damage.
+
+Prefer the normal, prompt-on-each-action behavior? Remove `--dangerously-skip-permissions`
+from the scripts — it's a one-line edit, clearly marked in:
+- `macos/quick-actions/Open in Claude*.workflow/Contents/document.wflow` (and `macos/scripts/steroids-grid.sh`)
+- `windows/scripts/open-in-claude.ps1` and `windows/scripts/steroids-grid.ps1`
 
 ---
 
