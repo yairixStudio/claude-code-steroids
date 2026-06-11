@@ -2,11 +2,10 @@
 # Opens 9 Claude Code sessions in a single Windows Terminal window, arranged as a
 # 3x3 grid of panes. Each pane runs: claude --dangerously-skip-permissions
 #
-# Usage: steroids-grid.ps1 "<folder>"
+# Usage: steroids-grid.ps1 "<folder>"   (defaults to the user profile folder)
 
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Dir
+    [string]$Dir = $env:USERPROFILE
 )
 
 if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {

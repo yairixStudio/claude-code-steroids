@@ -32,10 +32,37 @@ function Add-FolderMenu([string]$keyName, [string]$label, [string]$scriptFile) {
 Add-FolderMenu "OpenInClaude"  "Open in Claude"                "open-in-claude.ps1"
 Add-FolderMenu "ClaudeSteroids" "Open in Claude — Steroids (9x)" "steroids-grid.ps1"
 
+# Tray app + global hotkeys (Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T) — one lean
+# exe compiled locally with the csc.exe that ships with Windows, started at
+# login via HKCU Run.
+$csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if (-not (Test-Path $csc)) {
+    $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe"
+}
+if (Test-Path $csc) {
+    Write-Host "Compiling tray app (Ctrl+Alt+C session / Ctrl+Alt+S steroids / Ctrl+Alt+T arrange)..."
+    Stop-Process -Name "steroids-tray" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+    & $csc /nologo /target:winexe /out:"$dest\steroids-tray.exe" `
+        /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+        (Join-Path $PSScriptRoot "scripts\steroids-tray.cs")
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+        -Name "ClaudeSteroidsTray" -Value "`"$dest\steroids-tray.exe`""
+    Start-Process "$dest\steroids-tray.exe"
+} else {
+    Write-Host "csc.exe not found - skipping the tray app and hotkeys." -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "Installed." -ForegroundColor Green
 Write-Host "Right-click any folder (or inside one) to see the new menu items."
 Write-Host "On Windows 11 they may appear under 'Show more options'."
+Write-Host ""
+Write-Host "Tray icon (by the clock) + global hotkeys, from any app:"
+Write-Host "  Ctrl+Alt+C  New Claude Session       (one window, in your user folder)"
+Write-Host "  Ctrl+Alt+S  Steroids Mode (3x3 grid) (nine panes, in your user folder)"
+Write-Host "  Ctrl+Alt+T  Arrange Terminals        (grid: 4 -> 2x2, 9 -> 3x3, 10 -> 4x3 ...)"
+Write-Host "The tray app starts automatically at every login."
 Write-Host ""
 Write-Host "Requires: Windows Terminal + Claude Code CLI on your PATH."
 Write-Host "          https://claude.com/claude-code"

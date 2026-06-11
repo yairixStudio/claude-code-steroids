@@ -26,6 +26,24 @@ It adds **two** entries to your folder right-click menu:
 | **Open in Claude** | Opens one terminal in that folder and starts Claude Code (YOLO mode). |
 | **Open in Claude — Steroids (9×)** | Opens **9 Claude Code sessions at once**, tiled in a **3×3 grid** over your screen, all pointed at that folder (YOLO mode). |
 
+On macOS it also installs a lean **menu bar app** — a small grid icon (⊞) next to the
+clock, started at every login — with three actions, each also on a **true global hotkey**
+that works from any app:
+
+| Hotkey | Action |
+|--------|--------|
+| **⌃⌥C** | New Claude session (one Terminal window, YOLO mode, in `~`) |
+| **⌃⌥S** | Steroids Mode — 9 sessions in a 3×3 grid |
+| **⌃⌥T** | Arrange Terminals — tile **all Terminal windows on the current desktop** into a grid sized to the count: 4 → 2×2, 9 → 3×3, 10 → 4×3, 16 → 4×4 … |
+
+Either Option/Control key works (left or right). Windows on other desktops/Spaces and
+minimized windows are left alone.
+
+**Windows gets the same trio**: a system tray icon next to the clock with the three
+actions and global hotkeys **Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** — Steroids Mode
+there is nine panes in one Windows Terminal window, and Arrange tiles the Windows
+Terminal windows on the current virtual desktop. Starts automatically at every login.
+
 > Both run with `--dangerously-skip-permissions`. See the [safety note](#-a-note-on---dangerously-skip-permissions).
 
 ```
@@ -59,7 +77,14 @@ zsh install.sh
 Then: **right-click any folder in Finder → Quick Actions →**
 **“Open in Claude”** or **“Open in Claude — Steroids (9×)”**.
 
-- The first run asks for **Automation** permission (to let Terminal arrange windows) — click **OK**.
+You'll also get the menu bar icon (⊞) and the global hotkeys **⌃⌥C / ⌃⌥S / ⌃⌥T**
+(to change a combo, edit `macos/scripts/steroids-menubar.swift` and re-run the
+installer). Compiling them needs Xcode Command Line Tools (`xcode-select --install`).
+Optional: drag **Arrange Terminals** from **~/Applications** to your Dock for a
+one-click tile button.
+
+- The first run asks for **Automation** permission (to let Terminal arrange windows) —
+  click **OK**.
 - If the items don't appear, log out/in or relaunch Finder (Option-right-click the Finder dock icon → **Relaunch**).
 
 **Uninstall:** `zsh macos/uninstall.sh`
@@ -81,7 +106,12 @@ Then: **right-click any folder → “Open in Claude”** or **“Open in Claude
 On Windows 11 they may live under **“Show more options.”** The Steroids grid is a single
 Windows Terminal window split into nine panes.
 
-No administrator rights are needed — everything is written under your user (`HKCU`).
+You'll also get the tray icon (by the clock) and the global hotkeys
+**Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** (to change a combo, edit
+`windows/scripts/steroids-tray.cs` and re-run the installer).
+
+No administrator rights are needed — everything is written under your user (`HKCU`),
+and the tray app is compiled locally with the `csc.exe` that ships with Windows.
 
 **Uninstall:** `powershell -ExecutionPolicy Bypass -File .\windows\uninstall.ps1`
 
@@ -93,8 +123,20 @@ No administrator rights are needed — everything is written under your user (`H
   The Steroids action calls a small AppleScript that reads your screen size via
   `NSScreen` (no extra permissions), opens nine Terminal windows running
   `claude --dangerously-skip-permissions`, and tiles them into a 3×3 grid.
+  The menu bar app is a single ~100-line Swift file (`NSStatusItem` + Carbon's
+  `RegisterEventHotKey` — true global hotkeys that beat the frontmost app's own
+  shortcuts, no Accessibility permission needed), compiled locally by the installer
+  and started at login as a LaunchAgent. **Arrange Terminals** is a JXA script: it
+  reads on-screen window bounds via `CGWindowList` (which only reports the current
+  Space), matches them to Terminal's scriptable windows, and retiles them into a
+  `ceil(√n)`-column grid over the visible screen area.
 - **Windows** uses **registry context-menu entries** under `HKCU` that call PowerShell,
   which drives **Windows Terminal** (`wt.exe`) split-pane commands to build the grid.
+  The tray app is a single C# file (`NotifyIcon` + `RegisterHotKey`) compiled locally
+  by the installer and started at login via the `HKCU` Run key. **Arrange Terminals**
+  enumerates Windows Terminal windows with Win32 `EnumWindows`, keeps only those on
+  the current virtual desktop (`IVirtualDesktopManager`), and retiles them into a
+  `ceil(√n)`-column grid over the primary work area.
 
 Everything is plain text and easy to audit — read the `macos/` and `windows/` folders.
 

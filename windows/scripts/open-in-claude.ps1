@@ -1,14 +1,14 @@
 # Claude Code — Steroids Mode (Windows)
 # Opens a single Claude Code session in the given folder, using Windows Terminal.
 #
-# Usage: open-in-claude.ps1 "<folder>"
+# Usage: open-in-claude.ps1 "<folder>"   (defaults to the user profile folder)
 
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Dir
+    [string]$Dir = $env:USERPROFILE
 )
 
 if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
+    Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show(
         "Windows Terminal (wt.exe) was not found. Install it from the Microsoft Store.",
         "Claude Code — Steroids") | Out-Null
