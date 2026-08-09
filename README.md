@@ -37,7 +37,13 @@ that works from any app:
 | **⌃⌥T** | Arrange Terminals — tile **all Terminal windows on the current desktop** into a grid sized to the count: 4 → 2×2, 9 → 3×3, 10 → 4×3, 16 → 4×4 … |
 
 Either Option/Control key works (left or right). Windows on other desktops/Spaces and
-minimized windows are left alone.
+minimized windows are left alone. New sessions open on the Space you're **currently
+looking at**, so triggering a hotkey never yanks you to another desktop.
+
+Tearing a swarm down is one click too — the menu bar's **Quit** submenu offers
+**Close Terminals on This Desktop** and **Close ALL Claude Terminals**. Both kill the
+running processes first, so macOS never interrupts you with "Do you want to terminate
+running processes?" dialogs nine times in a row.
 
 **Windows gets the same trio**: a system tray icon next to the clock with the three
 actions and global hotkeys **Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** — Steroids Mode
@@ -181,6 +187,11 @@ Accept it once per folder and you won't see it again.
 Yes — the grid math lives in `macos/scripts/steroids-grid.sh` and
 `windows/scripts/steroids-grid.ps1`.
 
+**How do I close nine Claude sessions without nine confirmation dialogs?**
+On macOS, use the menu bar's **Quit** submenu → *Close Terminals on This Desktop* or
+*Close ALL Claude Terminals*. It terminates the `claude` processes before closing the
+windows, so Terminal has nothing left to warn about (`macos/scripts/close-terminals.sh`).
+
 ---
 
 ## 🤝 Contributing
@@ -196,4 +207,5 @@ grid sizes.
 
 <sub>Keywords: Claude Code, Anthropic, open folder in Claude, right-click Claude, Finder Quick Action,
 Windows context menu, parallel Claude sessions, multiple Claude agents, 3x3 terminal grid, AI coding
-assistant, macOS, Windows, PowerShell, developer productivity.</sub>
+assistant, agentic coding, swarm of AI agents, macOS menu bar app, Windows tray app, global hotkeys,
+tile terminal windows, macOS, Windows, PowerShell, Swift, developer productivity.</sub>
