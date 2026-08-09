@@ -22,10 +22,10 @@ let scriptsDir = NSString(
     string: "~/.local/share/claude-code-steroids"
 ).expandingTildeInPath
 
-func runScript(_ name: String) {
+func runScript(_ name: String, _ args: [String] = []) {
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    task.arguments = ["\(scriptsDir)/\(name)"]
+    task.arguments = ["\(scriptsDir)/\(name)"] + args
     try? task.run()
 }
 
@@ -83,9 +83,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(makeItem("Steroids Mode (9× Grid)", #selector(steroids), "s"))
         menu.addItem(makeItem("Arrange Terminals", #selector(arrange), "t"))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit",
-                                action: #selector(NSApplication.terminate(_:)),
-                                keyEquivalent: ""))
+
+        // "Quit" submenu — closes Terminal windows cleanly (processes killed
+        // first, so Terminal never shows a confirmation dialog).
+        let quitMenu = NSMenu()
+        quitMenu.addItem(makeItem("Close Terminals on This Desktop", #selector(closeSpace), ""))
+        quitMenu.addItem(makeItem("Close ALL Claude Terminals", #selector(closeClaudeAll), ""))
+        quitMenu.addItem(.separator())
+        quitMenu.addItem(NSMenuItem(title: "Quit Menu Bar App",
+                                    action: #selector(NSApplication.terminate(_:)),
+                                    keyEquivalent: ""))
+        let quitItem = NSMenuItem(title: "Quit", action: nil, keyEquivalent: "")
+        menu.setSubmenu(quitMenu, for: quitItem)
+        menu.addItem(quitItem)
         item.menu = menu
     }
 
@@ -96,9 +106,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return it
     }
 
-    @objc func newSession() { runScript("claude-session.sh") }
-    @objc func steroids()   { runScript("steroids-grid.sh") }
-    @objc func arrange()    { runScript("arrange-terminals.sh") }
+    @objc func newSession()    { runScript("claude-session.sh") }
+    @objc func steroids()      { runScript("steroids-grid.sh") }
+    @objc func arrange()       { runScript("arrange-terminals.sh") }
+    @objc func closeSpace()    { runScript("close-terminals.sh", ["space"]) }
+    @objc func closeClaudeAll(){ runScript("close-terminals.sh", ["claude"]) }
 }
 
 let app = NSApplication.shared

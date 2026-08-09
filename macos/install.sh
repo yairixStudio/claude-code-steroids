@@ -15,7 +15,9 @@ mkdir -p "$DEST" "$SERVICES"
 cp "$SCRIPT_DIR/scripts/steroids-grid.sh" "$DEST/"
 cp "$SCRIPT_DIR/scripts/arrange-terminals.sh" "$DEST/"
 cp "$SCRIPT_DIR/scripts/claude-session.sh" "$DEST/"
-chmod +x "$DEST/steroids-grid.sh" "$DEST/arrange-terminals.sh" "$DEST/claude-session.sh"
+cp "$SCRIPT_DIR/scripts/close-terminals.sh" "$DEST/"
+chmod +x "$DEST/steroids-grid.sh" "$DEST/arrange-terminals.sh" \
+         "$DEST/claude-session.sh" "$DEST/close-terminals.sh"
 
 # 2) Quick Actions: two Finder ones + a no-input "Arrange Terminals" service
 #    that can be triggered from any app via a global keyboard shortcut.
