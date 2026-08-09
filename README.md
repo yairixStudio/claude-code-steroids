@@ -188,9 +188,21 @@ Yes — the grid math lives in `macos/scripts/steroids-grid.sh` and
 `windows/scripts/steroids-grid.ps1`.
 
 **How do I close nine Claude sessions without nine confirmation dialogs?**
-On macOS, use the menu bar's **Quit** submenu → *Close Terminals on This Desktop* or
-*Close ALL Claude Terminals*. It terminates the `claude` processes before closing the
-windows, so Terminal has nothing left to warn about (`macos/scripts/close-terminals.sh`).
+Use the menu bar (macOS) or tray (Windows) **Quit** submenu → *Close Terminals on This
+Desktop* or *Close ALL Claude Terminals*. It terminates the `claude` processes before
+closing the windows, so the terminal has nothing left to warn about
+(`macos/scripts/close-terminals.sh`, `windows/scripts/close-terminals.ps1`).
+
+**Will "Close ALL Claude Terminals" close the session I run it from?**
+On Windows, no — that pane is detected and spared, so you can tear a swarm down from
+inside one of its own sessions. *Close Terminals on This Desktop* is the blunt one: a
+single Windows Terminal process owns every window, so it cannot tell them apart and
+closes all of them, the one you are sitting in included.
+
+**Does any of this work if I installed Claude Code through npm?**
+Yes. An npm install runs the CLI as `node.exe`, which the close actions recognise by the
+package on its command line rather than by process name — so unrelated Node processes are
+never touched.
 
 ---
 

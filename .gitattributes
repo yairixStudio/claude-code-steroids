@@ -1,0 +1,12 @@
+# The UTF-8 BOM on the Windows sources is load-bearing, not decoration: Windows
+# PowerShell reads a BOM-less file in the machine's ANSI code page, and without
+# the BOM the em dash in the menu labels decodes into a curly quote that ends
+# the string early and breaks the installer. Git stores the BOM as ordinary
+# content - these rules only pin line endings, and must never be extended with
+# an encoding filter that would strip it.
+*.ps1 text eol=crlf
+*.cs  text eol=crlf
+
+*.sh    text eol=lf
+*.swift text eol=lf
+*.md    text

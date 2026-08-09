@@ -1,14 +1,53 @@
-# Claude Code — Steroids Mode :: Windows uninstaller
-$ErrorActionPreference = "SilentlyContinue"
+﻿# Claude Code — Steroids Mode :: Windows uninstaller
+# Removes everything install.ps1 created. Nothing here needs admin rights.
+#
+#   powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 
-foreach ($root in @("Directory", "Directory\Background")) {
-    Remove-Item -Path "HKCU:\Software\Classes\$root\shell\OpenInClaude"  -Recurse -Force
-    Remove-Item -Path "HKCU:\Software\Classes\$root\shell\ClaudeSteroids" -Recurse -Force
+[CmdletBinding()]
+param()
+
+$removed = @()
+
+foreach ($root in @('Directory', 'Directory\Background')) {
+    foreach ($key in @('OpenInClaude', 'ClaudeSteroids')) {
+        $path = "HKCU:\Software\Classes\$root\shell\$key"
+        if (Test-Path $path) {
+            Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
+            $removed += "context menu: $root\$key"
+        }
+    }
 }
 
-Stop-Process -Name "steroids-tray" -Force
-Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "ClaudeSteroidsTray"
+if (Get-Process -Name 'steroids-tray' -ErrorAction SilentlyContinue) {
+    Stop-Process -Name 'steroids-tray' -Force -ErrorAction SilentlyContinue
+    # Wait for the process to actually go: Windows keeps a lock on a running
+    # exe, so deleting the folder below fails while it is still winding down.
+    for ($i = 0; $i -lt 25; $i++) {
+        if (-not (Get-Process -Name 'steroids-tray' -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    $removed += 'tray app (stopped)'
+}
 
-Remove-Item -Path (Join-Path $env:LOCALAPPDATA "claude-code-steroids") -Recurse -Force
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if ((Get-ItemProperty -Path $runKey -Name 'ClaudeSteroidsTray' -ErrorAction SilentlyContinue)) {
+    Remove-ItemProperty -Path $runKey -Name 'ClaudeSteroidsTray' -ErrorAction SilentlyContinue
+    $removed += 'login entry'
+}
 
-Write-Host "Uninstalled." -ForegroundColor Green
+$dest = Join-Path $env:LOCALAPPDATA 'claude-code-steroids'
+if (Test-Path $dest) {
+    Remove-Item -Path $dest -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $dest) {
+        Write-Host "Could not delete $dest - is the tray app still running?" -ForegroundColor Yellow
+    } else {
+        $removed += "files: $dest"
+    }
+}
+
+if ($removed.Count -eq 0) {
+    Write-Host 'Nothing to uninstall - it was not installed.'
+} else {
+    $removed | ForEach-Object { Write-Host "  removed $_" }
+    Write-Host 'Uninstalled.' -ForegroundColor Green
+}

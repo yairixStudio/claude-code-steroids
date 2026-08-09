@@ -1,0 +1,738 @@
+﻿# Claude Code — Steroids Mode :: Windows test suite
+#
+#   powershell -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+#   powershell -ExecutionPolicy Bypass -File .\tests\run-tests.ps1 -IncludeLive
+#
+# No Pester needed — plain PowerShell, so it runs on a stock Windows box.
+#
+# By default only checks that cannot disturb your desktop run. -IncludeLive adds
+# the ones that install for real, open Terminal windows and close them again;
+# they use a harmless placeholder command, never Claude itself.
+
+[CmdletBinding()]
+param(
+    [switch]$IncludeLive
+)
+
+$ErrorActionPreference = 'Stop'
+
+$root       = Split-Path -Parent $PSScriptRoot
+$scriptsDir = Join-Path $root 'scripts'
+
+$script:Pass = 0
+$script:Fail = 0
+$script:Failures = @()
+
+function Test-Case {
+    param([string]$Name, [scriptblock]$Body)
+
+    try {
+        & $Body
+        $script:Pass++
+        Write-Host "  PASS  $Name" -ForegroundColor Green
+    } catch {
+        $script:Fail++
+        $script:Failures += "$Name :: $($_.Exception.Message)"
+        Write-Host "  FAIL  $Name" -ForegroundColor Red
+        Write-Host "        $($_.Exception.Message)" -ForegroundColor DarkRed
+    }
+}
+
+function Assert-True {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw $Message }
+}
+
+function Assert-Equal {
+    param($Expected, $Actual, [string]$Message)
+    if ("$Expected" -ne "$Actual") { throw "$Message (expected '$Expected', got '$Actual')" }
+}
+
+function Section { param([string]$Title) Write-Host ''; Write-Host $Title -ForegroundColor Cyan }
+
+# ===========================================================================
+Section 'Encoding — the bug that stopped the installer dead'
+# ===========================================================================
+# install.ps1 shipped as UTF-8 with no BOM while containing an em dash. Windows
+# PowerShell reads a BOM-less file in the ANSI code page, so the dash decoded as
+# three characters, the last of which is a curly quote — which closes the string
+# early and turns the rest of the line into commands. The installer crashed
+# before it ever registered the Steroids menu entry. These two tests make sure
+# no file can regress into that state.
+
+$sourceFiles = @(Get-ChildItem -Path $root -Recurse -File -Include *.ps1, *.cs)
+
+foreach ($f in $sourceFiles) {
+    $rel = $f.FullName.Substring($root.Length + 1)
+
+    Test-Case "$rel is ASCII-only or carries a UTF-8 BOM" {
+        $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+        $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+        $nonAscii = @($bytes | Where-Object { $_ -gt 127 }).Count
+        Assert-True ($hasBom -or $nonAscii -eq 0) 'has non-ASCII bytes but no UTF-8 BOM'
+    }
+
+    Test-Case "$rel decodes cleanly under Windows PowerShell" {
+        $text = (Get-Content -Path $f.FullName -Raw)
+        # U+FFFD, and the two lead bytes a UTF-8 sequence decays into on the
+        # Hebrew/Cyrillic/Greek ANSI code pages.
+        Assert-True ($text -notmatch "[\uFFFD]") 'contains a replacement character'
+        Assert-True ($text -notmatch '\u05D2\u20AC') 'contains mojibake from an ANSI-decoded em dash'
+    }
+}
+
+foreach ($f in @($sourceFiles | Where-Object { $_.Extension -eq '.ps1' })) {
+    $rel = $f.FullName.Substring($root.Length + 1)
+    Test-Case "$rel parses without syntax errors" {
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors)
+        $detail = (@($errors) | ForEach-Object { $_.Message }) -join '; '
+        Assert-True ($errors.Count -eq 0) $detail
+    }
+}
+
+# ===========================================================================
+Section 'Resolve-TargetDir — Explorer''s %V mangling'
+# ===========================================================================
+. (Join-Path $scriptsDir 'steroids-common.ps1')
+
+Test-Case 'an ordinary folder passes through unchanged' {
+    Assert-Equal $env:USERPROFILE (Resolve-TargetDir $env:USERPROFILE) 'round trip'
+}
+
+Test-Case 'a drive root arriving as C:" is repaired to C:\' {
+    # This is exactly what the context-menu command hands over for a drive root:
+    # "%V" becomes "C:\" on the command line, and \" parses as a literal quote.
+    Assert-Equal 'C:\' (Resolve-TargetDir 'C:"') 'drive root repair'
+}
+
+Test-Case 'a path containing spaces survives' {
+    $withSpaces = Join-Path $env:TEMP 'steroids test dir'
+    New-Item -ItemType Directory -Force -Path $withSpaces | Out-Null
+    try { Assert-Equal $withSpaces (Resolve-TargetDir $withSpaces) 'spaces' }
+    finally { Remove-Item $withSpaces -Force -Recurse -ErrorAction SilentlyContinue }
+}
+
+Test-Case 'empty input falls back to the user profile' {
+    Assert-Equal $env:USERPROFILE (Resolve-TargetDir '') 'empty'
+    Assert-Equal $env:USERPROFILE (Resolve-TargetDir $null) 'null'
+}
+
+Test-Case 'a folder that does not exist falls back to the user profile' {
+    Assert-Equal $env:USERPROFILE (Resolve-TargetDir 'Z:\nope\not\here') 'missing'
+}
+
+Test-Case 'a file rather than a folder falls back to the user profile' {
+    $file = Join-Path $env:TEMP 'steroids-not-a-dir.txt'
+    'x' | Set-Content $file
+    try { Assert-Equal $env:USERPROFILE (Resolve-TargetDir $file) 'file' }
+    finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
+}
+
+# ===========================================================================
+Section 'Grid construction'
+# ===========================================================================
+$gridScript = Join-Path $scriptsDir 'steroids-grid.ps1'
+
+function Get-GridArgs {
+    param([int]$Columns = 3, [int]$Rows = 3, [string]$Dir = $env:USERPROFILE)
+    return @(& $gridScript -Dir $Dir -Columns $Columns -Rows $Rows -DryRun)
+}
+
+Test-Case 'the default grid builds exactly nine panes' {
+    $a = Get-GridArgs
+    $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count + @($a | Where-Object { $_ -eq 'new-tab' }).Count
+    Assert-Equal 9 $panes 'pane count'
+}
+
+Test-Case 'pane count tracks Columns x Rows' {
+    foreach ($case in @(@(2, 2, 4), @(4, 4, 16), @(1, 1, 1), @(3, 2, 6))) {
+        $a = Get-GridArgs -Columns $case[0] -Rows $case[1]
+        $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count + @($a | Where-Object { $_ -eq 'new-tab' }).Count
+        Assert-Equal $case[2] $panes "$($case[0])x$($case[1])"
+    }
+}
+
+Test-Case 'every pane runs Claude in the requested folder' {
+    $a = Get-GridArgs
+    Assert-Equal 9 (@($a | Where-Object { $_ -eq $env:USERPROFILE }).Count) '-d arguments'
+    Assert-Equal 9 (@($a | Where-Object { $_ -like 'claude *' }).Count) 'claude commands'
+    Assert-True ($a -contains '--dangerously-skip-permissions' -or
+                 (@($a | Where-Object { $_ -like '*--dangerously-skip-permissions*' }).Count -eq 9)) 'YOLO flag present'
+}
+
+Test-Case 'the window is maximized and always brand new' {
+    $a = Get-GridArgs
+    Assert-True ($a -contains '-M') 'missing -M, so nine panes would be crammed into a default-sized window'
+    Assert-True ($a -contains 'new') 'missing -w new, so the grid could hijack the terminal you are working in'
+    Assert-Equal '-w' $a[0] 'window argument must lead'
+}
+
+Test-Case 'split sizes use an invariant decimal point' {
+    # wt only accepts 0.6667. On a comma-decimal locale a culture-sensitive
+    # format would emit 0,6667 and every split would be rejected.
+    $a = Get-GridArgs
+    $sizes = @()
+    for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -eq '--size') { $sizes += $a[$i + 1] } }
+    Assert-True ($sizes.Count -gt 0) 'no --size arguments found'
+    foreach ($s in $sizes) {
+        Assert-True ($s -notmatch ',') "size '$s' used a comma"
+        Assert-True ($s -match '^0\.\d+$') "size '$s' is not an invariant fraction"
+    }
+}
+
+Test-Case 'split sizes are the fractions that make equal columns' {
+    $a = Get-GridArgs -Columns 3 -Rows 1
+    $sizes = @()
+    for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -eq '--size') { $sizes += $a[$i + 1] } }
+    Assert-Equal '0.6667' $sizes[0] 'first vertical split'
+    Assert-Equal '0.5'    $sizes[1] 'second vertical split'
+}
+
+Test-Case 'the grid walks left once per column boundary' {
+    $a = Get-GridArgs -Columns 3 -Rows 3
+    Assert-Equal 2 (@($a | Where-Object { $_ -eq 'move-focus' }).Count) 'move-focus count'
+}
+
+Test-Case 'a single session opens one pane in a new window' {
+    $a = @(& (Join-Path $scriptsDir 'open-in-claude.ps1') -Dir $env:USERPROFILE -DryRun)
+    Assert-Equal 1 (@($a | Where-Object { $_ -eq 'new-tab' }).Count) 'one tab'
+    Assert-True ($a -notcontains 'split-pane') 'no splits'
+    Assert-True ($a -contains 'new') 'new window'
+}
+
+# ===========================================================================
+Section 'Command-line quoting - the bug that broke every folder with a space'
+# ===========================================================================
+# Start-Process on Windows PowerShell joins an -ArgumentList array with plain
+# spaces and quotes nothing, so "C:\My Projects" used to reach wt.exe as two
+# arguments and the session opened in C:\My. Every case below is checked by
+# handing the built command line back to CommandLineToArgvW -- the very parser
+# the target program uses -- so these test Windows' behaviour, not a rereading
+# of the quoting rules.
+Initialize-SteroidsInterop
+
+function Get-RoundTrip {
+    param([string[]]$Arguments)
+    # argv[0] is parsed by the special program-name rules, so lead with a dummy.
+    $line = 'prog.exe ' + (ConvertTo-WtCommandLine $Arguments)
+    return @([SteroidsWin]::ParseCommandLine($line) | Select-Object -Skip 1)
+}
+
+function Assert-RoundTrip {
+    param([string[]]$Arguments, [string]$Message)
+    $got = Get-RoundTrip $Arguments
+    Assert-Equal $Arguments.Count $got.Count "$Message (argument count)"
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        Assert-Equal $Arguments[$i] $got[$i] "$Message (argument $i)"
+    }
+}
+
+Test-Case 'a folder with spaces survives the trip to wt.exe' {
+    Assert-RoundTrip @('new-tab', '-d', 'C:\My Test Folder', 'cmd', '/k', 'claude --dangerously-skip-permissions') 'spaces'
+}
+
+Test-Case 'a drive root does not lose its backslash to the closing quote' {
+    # 'C:\' naively quoted becomes "C:\", whose backslash escapes the quote and
+    # hands the program the literal C:" instead.
+    Assert-RoundTrip @('-d', 'C:\') 'drive root'
+    Assert-RoundTrip @('-d', 'C:\My Folder\') 'trailing backslash after a space'
+}
+
+Test-Case 'the YOLO flag stays attached to its claude command' {
+    $got = Get-RoundTrip (@('new-tab', '-d', 'C:\Some Folder') + (Get-ClaudePaneCommand))
+    Assert-Equal 'claude --dangerously-skip-permissions' $got[-1] 'pane command must stay one argument'
+}
+
+Test-Case 'unusual but legal folder names survive' {
+    foreach ($dir in @('C:\a&b', 'C:\100% done', "C:\it's here", 'C:\(parens)', 'C:\a,b', 'C:\ends with space ')) {
+        Assert-RoundTrip @('-d', $dir) "folder $dir"
+    }
+}
+
+Test-Case 'semicolon delimiters stay raw, semicolons in a path do not' {
+    # wt splits its command list on bare ';' arguments. The delimiter must reach
+    # it unquoted, while a path containing one must not be allowed to split it.
+    $line = ConvertTo-WtCommandLine @('new-tab', '-d', 'C:\notes; drafts', ';', 'split-pane')
+    Assert-True ($line -match '(^|\s);(\s|$)') 'the delimiter was quoted away'
+    Assert-True ($line -match '\\;') 'the semicolon inside the path was not escaped'
+
+    # After Windows' parser, the escape is still there for wt itself to undo.
+    $got = @([SteroidsWin]::ParseCommandLine('prog.exe ' + $line) | Select-Object -Skip 1)
+    Assert-Equal 5 $got.Count 'argument count'
+    Assert-Equal ';' $got[3] 'delimiter must arrive as its own argument'
+    Assert-Equal 'C:\notes\; drafts' $got[2] 'path semicolon must arrive escaped for wt'
+}
+
+Test-Case 'arguments needing no quotes are left alone' {
+    Assert-Equal 'new-tab' (Format-CommandLineArgument 'new-tab') 'plain argument'
+    Assert-Equal '"C:\a b"' (Format-CommandLineArgument 'C:\a b') 'quoted argument'
+    Assert-Equal '""' (Format-CommandLineArgument '') 'empty argument'
+}
+
+Test-Case 'the real grid command line round-trips argument for argument' {
+    $args9 = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
+    $line  = ConvertTo-WtCommandLine $args9
+    $got   = @([SteroidsWin]::ParseCommandLine('prog.exe ' + $line) | Select-Object -Skip 1)
+    Assert-Equal $args9.Count $got.Count 'the nine-pane command line changed shape in transit'
+    Assert-Equal 9 (@($got | Where-Object { $_ -eq 'claude --dangerously-skip-permissions' }).Count) 'pane commands'
+}
+
+# ===========================================================================
+Section 'Claude session detection'
+# ===========================================================================
+# What "Close ALL Claude Terminals" fires at. The native installer leaves a
+# claude.exe in the tree; an npm install runs the CLI as node.exe with the
+# package path on its command line, and matching node by name would take out
+# every unrelated Node process on the machine.
+
+function New-FakeProcess {
+    param([string]$Name, [string]$CommandLine)
+    return [pscustomobject]@{ Name = $Name; CommandLine = $CommandLine }
+}
+
+Test-Case 'a native claude.exe is recognised' {
+    Assert-True (Test-ClaudeProcess (New-FakeProcess 'claude.exe' 'claude --dangerously-skip-permissions')) 'by name'
+}
+
+Test-Case 'the pane shell we launch is recognised by its command line' {
+    Assert-True (Test-ClaudeProcess (New-FakeProcess 'cmd.exe' 'cmd /k claude --dangerously-skip-permissions')) 'cmd pane'
+    Assert-True (Test-ClaudeProcess (New-FakeProcess 'cmd.exe' '"C:\Users\a b\.local\bin\claude.exe" --resume')) 'quoted full path'
+}
+
+Test-Case 'an npm-installed Claude running under node is recognised' {
+    $npm = '"C:\Program Files\nodejs\node.exe" "C:\Users\a\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js"'
+    Assert-True (Test-ClaudeProcess (New-FakeProcess 'node.exe' $npm)) 'npm install'
+}
+
+Test-Case 'unrelated processes are left alone' {
+    foreach ($p in @(
+        (New-FakeProcess 'node.exe'    '"C:\Program Files\nodejs\node.exe" server.js'),
+        (New-FakeProcess 'cmd.exe'     'cmd /k'),
+        (New-FakeProcess 'notepad.exe' 'notepad claude.md'),
+        (New-FakeProcess 'git.exe'     'git clone https://github.com/x/claude-notes.git'),
+        (New-FakeProcess 'cmd.exe'     $null)
+    )) {
+        Assert-True (-not (Test-ClaudeProcess $p)) "false positive on: $($p.CommandLine)"
+    }
+}
+
+Test-Case 'the pane hosting this very process is recognised as self' {
+    # What stops "Close ALL Claude Terminals" from closing the session that ran
+    # it -- including this test run, which exercises the real thing.
+    $hosting = [pscustomobject]@{
+        ProcessId = 4; Name = 'cmd.exe'; CommandLine = 'cmd /k'
+        Descendants = @([pscustomobject]@{ ProcessId = $PID; Name = 'powershell.exe'; CommandLine = 'powershell' })
+    }
+    Assert-True (Test-ShellHostsSelf $hosting) 'a pane we descend from must count as self'
+
+    $direct = [pscustomobject]@{ ProcessId = $PID; Name = 'cmd.exe'; Descendants = @() }
+    Assert-True (Test-ShellHostsSelf $direct) 'our own process must count as self'
+
+    $other = [pscustomobject]@{
+        ProcessId = 4; Name = 'cmd.exe'
+        Descendants = @([pscustomobject]@{ ProcessId = 5; Name = 'claude.exe' })
+    }
+    Assert-True (-not (Test-ShellHostsSelf $other)) 'an unrelated pane must not count as self'
+}
+
+Test-Case 'the live sweep would spare the session running these tests' {
+    # A guard, not a unit test: if this stops holding, the -IncludeLive run
+    # below would kill its own terminal partway through.
+    $sweep = @(Get-TerminalPaneShell |
+               Where-Object { Test-ShellRunsClaude $_ } |
+               Where-Object { -not (Test-ShellHostsSelf $_) })
+    foreach ($s in $sweep) {
+        Assert-True ([int]$s.ProcessId -ne $PID) 'the sweep targeted this process'
+        foreach ($d in $s.Descendants) {
+            Assert-True ([int]$d.ProcessId -ne $PID) 'the sweep targeted a pane we live in'
+        }
+    }
+}
+
+Test-Case 'a shell counts as Claude when a descendant is Claude' {
+    $shell = [pscustomobject]@{
+        Name = 'cmd.exe'; CommandLine = 'cmd /k'
+        Descendants = @((New-FakeProcess 'node.exe' 'node C:\x\@anthropic-ai\claude-code\cli.js'))
+    }
+    Assert-True (Test-ShellRunsClaude $shell) 'descendant match'
+
+    $plain = [pscustomobject]@{
+        Name = 'cmd.exe'; CommandLine = 'cmd /k'
+        Descendants = @((New-FakeProcess 'git.exe' 'git status'))
+    }
+    Assert-True (-not (Test-ShellRunsClaude $plain)) 'plain shell must be left alone'
+}
+
+# ===========================================================================
+Section 'Tiling maths'
+# ===========================================================================
+# Mirrors the arrange script: square-ish, wider before taller.
+function Get-GridShape {
+    param([int]$n)
+    $cols = [int][Math]::Ceiling([Math]::Sqrt($n))
+    $rows = [int][Math]::Ceiling($n / [double]$cols)
+    return "${cols}x${rows}"
+}
+
+Test-Case 'window counts map to the documented grid shapes' {
+    Assert-Equal '1x1' (Get-GridShape 1)  'one window'
+    Assert-Equal '2x2' (Get-GridShape 4)  'four windows'
+    Assert-Equal '3x3' (Get-GridShape 9)  'nine windows'
+    Assert-Equal '4x3' (Get-GridShape 10) 'ten windows'
+    Assert-Equal '4x4' (Get-GridShape 16) 'sixteen windows'
+    Assert-Equal '2x2' (Get-GridShape 3)  'three windows'
+}
+
+# ===========================================================================
+Section 'Win32 interop'
+# ===========================================================================
+Test-Case 'the interop type compiles and reports DPI awareness' {
+    Initialize-SteroidsInterop
+    Assert-True ([bool]('SteroidsWin' -as [type])) 'type not defined'
+}
+
+Test-Case 'the work area is a sane, non-empty rectangle' {
+    Initialize-SteroidsInterop
+    $a = [SteroidsWin]::WorkArea()
+    Assert-True (($a.Right - $a.Left) -gt 200) 'width'
+    Assert-True (($a.Bottom - $a.Top) -gt 200) 'height'
+}
+
+Test-Case 'window enumeration runs and returns terminal windows only' {
+    Initialize-SteroidsInterop
+    $all = @([SteroidsWin]::Find('WindowsTerminal', $false))
+    $here = @([SteroidsWin]::Find('WindowsTerminal', $true))
+    Assert-True ($here.Count -le $all.Count) 'current desktop must be a subset of all desktops'
+    Assert-Equal 0 (@([SteroidsWin]::Find('a-process-that-does-not-exist', $false)).Count) 'unknown process'
+}
+
+Test-Case 'pane shells resolve to real processes' {
+    $shells = @(Get-TerminalPaneShell)
+    foreach ($s in $shells) {
+        Assert-True ($s.ProcessId -gt 0) 'bad pid'
+        Assert-True ($null -ne $s.Name) 'missing name'
+    }
+
+    # Not a formality: the lookup used to build its index with the UInt32 pids
+    # CIM returns and probe it with the Int32 pids Get-Process returns. A
+    # hashtable compares key type as well as value, so every lookup missed, the
+    # list came back empty, and the close actions answered "no Claude sessions"
+    # however many were running. An empty result with Terminal running is the
+    # exact shape of that bug.
+    if (Get-Process -Name 'WindowsTerminal' -ErrorAction SilentlyContinue) {
+        Assert-True ($shells.Count -gt 0) 'Windows Terminal is running but no pane shells were found'
+    }
+}
+
+# ===========================================================================
+Section 'Installer / uninstaller round trip'
+# ===========================================================================
+$menuKeys = @(
+    'HKCU:\Software\Classes\Directory\shell\OpenInClaude',
+    'HKCU:\Software\Classes\Directory\shell\ClaudeSteroids',
+    'HKCU:\Software\Classes\Directory\Background\shell\OpenInClaude',
+    'HKCU:\Software\Classes\Directory\Background\shell\ClaudeSteroids'
+)
+
+if ($IncludeLive) {
+    $installer   = Join-Path $root 'install.ps1'
+    $uninstaller = Join-Path $root 'uninstall.ps1'
+    $dest        = Join-Path $env:LOCALAPPDATA 'claude-code-steroids'
+
+    Test-Case 'the installer completes without errors' {
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NoTray 2>&1
+        Assert-Equal 0 $LASTEXITCODE ("installer exited $LASTEXITCODE`n" + ($out -join "`n"))
+        Assert-True (($out -join "`n") -notmatch 'not recognized') 'installer printed a command-not-found error'
+    }
+
+    Test-Case 'all four context-menu entries are registered' {
+        foreach ($k in $menuKeys) { Assert-True (Test-Path $k) "missing $k" }
+    }
+
+    Test-Case 'the Steroids label survives the round trip through the registry' {
+        # The original bug ended here: the label never got written at all.
+        $label = (Get-ItemProperty 'HKCU:\Software\Classes\Directory\shell\ClaudeSteroids').MUIVerb
+        Assert-Equal ([char]0x2014) ($label[15]) 'em dash position'
+        Assert-Equal 'Open in Claude — Steroids (9x)' $label 'label text'
+    }
+
+    Test-Case 'the menu command points at a script that exists' {
+        foreach ($k in $menuKeys) {
+            $cmd = (Get-ItemProperty (Join-Path $k 'command')).'(default)'
+            Assert-True ($cmd -match '-File "([^"]+)"') "no -File in: $cmd"
+            Assert-True (Test-Path $matches[1]) "missing script: $($matches[1])"
+            Assert-True ($cmd -match '"%V"$') "command must end with the folder placeholder: $cmd"
+        }
+    }
+
+    Test-Case 'every script the menu and tray call was deployed' {
+        foreach ($n in @('open-in-claude.ps1', 'steroids-grid.ps1', 'arrange-terminals.ps1',
+                         'close-terminals.ps1', 'steroids-common.ps1')) {
+            Assert-True (Test-Path (Join-Path $dest $n)) "missing $n in $dest"
+        }
+    }
+
+    Test-Case 'the tray app compiles with the Windows C# compiler' {
+        $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+        if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+        Assert-True (Test-Path $csc) 'csc.exe not found'
+        $exe = Join-Path $env:TEMP 'steroids-tray-test.exe'
+        $out = & $csc /nologo /target:winexe /out:"$exe" /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+                  (Join-Path $scriptsDir 'steroids-tray.cs') 2>&1
+        try {
+            Assert-Equal 0 $LASTEXITCODE ("csc exited $LASTEXITCODE`n" + ($out -join "`n"))
+            Assert-True (Test-Path $exe) 'no exe produced'
+        } finally { Remove-Item $exe -Force -ErrorAction SilentlyContinue }
+    }
+
+    Test-Case 'the uninstaller removes every trace' {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $uninstaller | Out-Null
+        foreach ($k in $menuKeys) { Assert-True (-not (Test-Path $k)) "left behind: $k" }
+        Assert-True (-not (Test-Path $dest)) "left behind: $dest"
+        Assert-True (-not (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+                            -Name 'ClaudeSteroidsTray' -ErrorAction SilentlyContinue)) 'left behind: login entry'
+    }
+
+    Test-Case 'uninstalling twice is harmless' {
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $uninstaller 2>&1
+        Assert-Equal 0 $LASTEXITCODE 'second uninstall failed'
+        Assert-True (($out -join '') -match 'Nothing to uninstall') 'expected the no-op message'
+    }
+
+    # -------------------------------------------------------------------
+    Section 'Live windows'
+    # -------------------------------------------------------------------
+    # A stand-in for Claude, so the suite never spawns nine real agents.
+    $marker = 'STEROIDS_TEST_PANE'
+    $probe  = @('cmd', '/k', "prompt $marker`$ ")
+
+    # Every window the suite opens is titled with the marker, and every window
+    # the suite closes is looked up by that title. One Windows Terminal process
+    # owns all the windows, so identifying ours by elimination -- "whatever
+    # appeared since a moment ago" -- would put a window the user restored, or
+    # the terminal running these tests, in the firing line.
+    $titledProbe = @('-w', 'new', 'new-tab', '--title', $marker, '-d', $env:USERPROFILE) + $probe
+
+    function Get-ProbeWindow {
+        Initialize-SteroidsInterop
+        return @([SteroidsWin]::Find('WindowsTerminal', $false) |
+                   Where-Object { [SteroidsWin]::Title($_) -like "*$marker*" })
+    }
+
+    function Wait-ForProbeWindow {
+        param([int]$Expected, [int]$TimeoutSeconds = 25)
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        do {
+            $n = @(Get-ProbeWindow).Count
+            if ($n -eq $Expected) { return $n }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+        return @(Get-ProbeWindow).Count
+    }
+
+    function Get-ProbeCount {
+        return @(Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.CommandLine -like "*$marker*" }).Count
+    }
+
+    # End probes the same way the product does — exit code 0 — so Terminal
+    # retires the panes and the suite never litters the desktop with dead
+    # windows the way a plain Stop-Process would.
+    function Stop-Probes {
+        Initialize-SteroidsInterop
+        Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like "*$marker*" } |
+            ForEach-Object { [void][SteroidsWin]::EndProcess([int]$_.ProcessId, 0) }
+        for ($i = 0; $i -lt 20 -and (Get-ProbeCount) -gt 0; $i++) { Start-Sleep -Milliseconds 500 }
+    }
+
+    # Terminal brings panes up one at a time, and on a loaded machine the last
+    # one can take a few seconds — so wait for the count to settle rather than
+    # sampling once at an arbitrary moment. A grid that never reaches nine still
+    # fails, it just is not allowed to fail merely for being slow.
+    function Wait-ForProbes {
+        param([int]$Expected, [int]$TimeoutSeconds = 30)
+
+        $seen = @()
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        do {
+            $n = Get-ProbeCount
+            $seen += $n
+            if ($n -ge $Expected) { return @{ Count = $n; Trace = $seen } }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+        return @{ Count = (Get-ProbeCount); Trace = $seen }
+    }
+
+    Test-Case 'a nine-pane grid really opens, and really is nine panes' {
+        Stop-Probes
+        $a = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
+        # Swap the Claude command for the probe, keeping the layout identical.
+        $live = @(); $i = 0
+        while ($i -lt $a.Count) {
+            if ($a[$i] -eq 'cmd' -and $a[$i + 1] -eq '/k') { $live += $probe; $i += 3 }
+            else { $live += $a[$i]; $i++ }
+        }
+        Assert-Equal 9 (@($live | Where-Object { $_ -like "prompt $marker*" }).Count) 'probe substitution'
+
+        Start-WindowsTerminal $live
+        $result = Wait-ForProbes -Expected 9
+        Stop-Probes
+        Assert-Equal 9 $result.Count "panes actually created (observed over time: $($result.Trace -join ','))"
+    }
+
+    Test-Case 'a pane really opens in a folder whose name needs quoting' {
+        # The end-to-end version of the quoting tests: before the fix, wt read
+        # "C:\...\steroids test dir" as three arguments and the pane opened in
+        # whatever "...\steroids" resolved to. The pane reports its own working
+        # directory, so this checks where it actually landed rather than what we
+        # asked for.
+        $cwdFile = Join-Path $env:TEMP 'steroids-cwd.txt'
+
+        foreach ($name in @('steroids test dir', 'steroids;semi dir', 'steroids (100%) dir')) {
+            $probeDir = Join-Path $env:TEMP $name
+            New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+            Remove-Item $cwdFile -Force -ErrorAction SilentlyContinue
+            Stop-Probes
+            try {
+                $paneCmd = 'prompt ' + $marker + '$ & cd > "' + $cwdFile + '"'
+                Start-WindowsTerminal (@('-w', 'new', 'new-tab', '-d', $probeDir) + @('cmd', '/k', $paneCmd))
+
+                $deadline = (Get-Date).AddSeconds(25)
+                while ((Get-Date) -lt $deadline -and -not (Test-Path $cwdFile)) { Start-Sleep -Milliseconds 500 }
+                Assert-True (Test-Path $cwdFile) "the pane never started for '$name'"
+                Assert-Equal $probeDir ((Get-Content $cwdFile -Raw).Trim()) "pane opened in the wrong folder for '$name'"
+            } finally {
+                Stop-Probes
+                Remove-Item $cwdFile  -Force -ErrorAction SilentlyContinue
+                Remove-Item $probeDir -Force -Recurse -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Test-Case 'arranging leaves every terminal inside the work area' {
+        # Wait for anything an earlier test closed to actually be gone: comparing
+        # raw window counts across a window that is still dying is a race, and
+        # the property that matters is that no window we had disappeared, not
+        # that the total held still.
+        Stop-Probes
+        Assert-Equal 0 (Wait-ForProbeWindow 0) 'a probe window from an earlier test was still closing'
+
+        $before = @([SteroidsWin]::Find('WindowsTerminal', $true))
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scriptsDir 'arrange-terminals.ps1') 2>&1
+        Assert-Equal 0 $LASTEXITCODE ($out -join "`n")
+        Assert-True (($out -join '') -match 'Arranged|No WindowsTerminal') "unexpected output: $out"
+
+        $after = @([SteroidsWin]::Find('WindowsTerminal', $true))
+        foreach ($h in $before) { Assert-True ($after -contains $h) 'arranging closed a window' }
+
+        # And the part the name actually promises. Terminal keeps an invisible
+        # resize border, so allow a few pixels of slack on each edge.
+        if (($out -join '') -match 'Arranged') {
+            $area  = [SteroidsWin]::WorkArea()
+            $slack = 16
+            foreach ($h in $after) {
+                $r = [SteroidsWin]::Bounds($h)
+                Assert-True ($r.Left   -ge ($area.Left   - $slack)) "window escaped the work area on the left"
+                Assert-True ($r.Top    -ge ($area.Top    - $slack)) "window escaped the work area on the top"
+                Assert-True ($r.Right  -le ($area.Right  + $slack)) "window escaped the work area on the right"
+                Assert-True ($r.Bottom -le ($area.Bottom + $slack)) "window escaped the work area on the bottom"
+            }
+        }
+    }
+
+    Test-Case 'closing Claude terminals reports honestly when there are none' {
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass `
+                  -File (Join-Path $scriptsDir 'close-terminals.ps1') -Mode claude -WhatIf 2>&1
+        Assert-Equal 0 $LASTEXITCODE ($out -join "`n")
+    }
+
+    Test-Case 'close -WhatIf never actually kills anything' {
+        Stop-Probes
+        Start-WindowsTerminal $titledProbe
+        try {
+            Assert-Equal 1 (Wait-ForProbes -Expected 1).Count 'probe window did not open'
+            & powershell -NoProfile -ExecutionPolicy Bypass `
+                -File (Join-Path $scriptsDir 'close-terminals.ps1') -Mode desktop -WhatIf | Out-Null
+            Start-Sleep -Seconds 2
+            Assert-Equal 1 (Get-ProbeCount) '-WhatIf killed a real process'
+        } finally { Stop-Probes }
+    }
+
+    Test-Case 'ending a pane with exit code 0 retires it, and the window with it' {
+        # The whole close feature rests on this: Terminal's default closeOnExit
+        # is "graceful", so a pane killed with a failure code stays on screen as
+        # a dead pane. Ending it with 0 is what makes the window disappear.
+        Stop-Probes
+        Start-WindowsTerminal $titledProbe
+        try {
+            Assert-Equal 1 (Wait-ForProbes -Expected 1).Count 'probe window did not open'
+            Assert-Equal 1 (Wait-ForProbeWindow 1) 'window did not appear'
+            Stop-Probes
+            Assert-Equal 0 (Wait-ForProbeWindow 0) 'window did not close itself'
+        } finally { Stop-Probes }
+    }
+
+    Test-Case 'claude mode picks real Claude panes, and spares this session' {
+        # Deliberately -WhatIf. The sweep runs against whatever is really on the
+        # machine, so a live one would end the user's other Claude sessions --
+        # and, before Test-ShellHostsSelf, the session running these tests.
+        # What it *would have* targeted is the thing worth asserting.
+        Stop-Probes
+        Start-WindowsTerminal $titledProbe
+        try {
+            Assert-Equal 1 (Wait-ForProbes -Expected 1).Count 'probe window did not open'
+            $probePid = @(Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+                            Where-Object { $_.CommandLine -like "*$marker*" })[0].ProcessId
+
+            $out = (& powershell -NoProfile -ExecutionPolicy Bypass `
+                      -File (Join-Path $scriptsDir 'close-terminals.ps1') -Mode claude -WhatIf 2>&1) -join "`n"
+            Assert-Equal 0 $LASTEXITCODE $out
+
+            Assert-True ($out -notmatch "pid $probePid\b") 'targeted a terminal that is not running Claude'
+
+            foreach ($self in @(Get-TerminalPaneShell | Where-Object { Test-ShellHostsSelf $_ })) {
+                Assert-True ($out -notmatch "pid $($self.ProcessId)\b") `
+                    'the sweep targeted the session running these tests'
+            }
+
+            Assert-Equal 1 (Get-ProbeCount) '-WhatIf killed a real process'
+        } finally { Stop-Probes }
+    }
+
+    Test-Case 'closing a window takes its panes and their processes with it' {
+        # Desktop mode closes every terminal on the desktop, which would include
+        # the one running this suite - so exercise the mechanism it uses on a
+        # single throwaway window instead. The sweep itself is covered by the
+        # -WhatIf test above.
+        Stop-Probes
+        Start-WindowsTerminal $titledProbe
+        try {
+            Assert-Equal 1 (Wait-ForProbes -Expected 1).Count 'probe window did not open'
+            $ours = @(Get-ProbeWindow)
+            Assert-Equal 1 $ours.Count 'could not identify our own window by its title'
+
+            [SteroidsWin]::CloseWindow($ours[0])
+
+            $deadline = (Get-Date).AddSeconds(20)
+            while ((Get-Date) -lt $deadline -and (Get-ProbeCount) -gt 0) { Start-Sleep -Milliseconds 500 }
+            Assert-Equal 0 (Get-ProbeCount) 'closing the window left its pane process running'
+            Assert-Equal 0 (Wait-ForProbeWindow 0) 'window did not go away'
+        } finally { Stop-Probes }
+    }
+} else {
+    Write-Host '  SKIP  installer, tray build and live-window tests (pass -IncludeLive to run them)' -ForegroundColor DarkGray
+}
+
+# ===========================================================================
+Write-Host ''
+Write-Host ('-' * 60)
+if ($script:Fail -eq 0) {
+    Write-Host "All $($script:Pass) tests passed." -ForegroundColor Green
+    exit 0
+} else {
+    Write-Host "$($script:Pass) passed, $($script:Fail) FAILED" -ForegroundColor Red
+    $script:Failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    exit 1
+}
