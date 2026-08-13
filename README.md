@@ -43,7 +43,8 @@ looking at**, so triggering a hotkey never yanks you to another desktop.
 Tearing a swarm down is one click too — the menu bar's **Quit** submenu offers
 **Close Terminals on This Desktop** and **Close ALL Claude Terminals**. Both kill the
 running processes first, so macOS never interrupts you with "Do you want to terminate
-running processes?" dialogs nine times in a row.
+running processes?" dialogs nine times in a row. A session that happens to be
+**updating Claude** is left open on purpose — see the FAQ.
 
 **Windows gets the same trio**: a system tray icon next to the clock with the three
 actions and global hotkeys **Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** — Steroids Mode
@@ -198,6 +199,17 @@ On Windows, no — that pane is detected and spared, so you can tear a swarm dow
 inside one of its own sessions. *Close Terminals on This Desktop* is the blunt one: a
 single Windows Terminal process owns every window, so it cannot tell them apart and
 closes all of them, the one you are sitting in included.
+
+**Why did a close action leave one window open?**
+Because Claude was updating itself in it. Claude Code keeps current by shelling out to
+`npm install -g`, which unpacks to a staging directory and only renames it into place at
+the very end. Killing it in between doesn't just fail the update — the staging directory
+left behind makes *every later install* fail with `ENOTEMPTY`, so `claude` reports
+`command not found` until someone deletes it by hand. The close actions therefore skip a
+session with a package install in flight and tell you they did (on Windows, *Close
+Terminals on This Desktop* can't tell panes and windows apart, so it defers the whole
+sweep instead). Long-running `npm exec` / `npx` processes such as MCP servers are **not**
+installs and never hold a window open.
 
 **Does any of this work if I installed Claude Code through npm?**
 Yes. An npm install runs the CLI as `node.exe`, which the close actions recognise by the

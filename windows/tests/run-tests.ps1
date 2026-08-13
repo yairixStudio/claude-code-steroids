@@ -365,6 +365,65 @@ Test-Case 'a shell counts as Claude when a descendant is Claude' {
 }
 
 # ===========================================================================
+Section 'What a close action must not interrupt'
+# ===========================================================================
+# Claude updates itself with `npm install -g`. Killed between unpacking and the
+# final rename it does not just fail -- the staging directory it leaves behind
+# makes every later install fail ENOTEMPTY, and the CLI is gone until someone
+# clears it by hand. So an installing pane is spared. The line to hold is
+# installs versus package managers: npm-launched MCP servers live for the whole
+# session, and sparing those would spare every pane.
+
+Test-Case 'the update that a sweep must not kill is recognised' {
+    foreach ($cmd in @(
+        'npm install -g @anthropic-ai/claude-code',
+        '"C:\Program Files\nodejs\node.exe" "C:\Users\a\AppData\Roaming\npm\node_modules\npm\bin\npm-cli.js" install -g @anthropic-ai/claude-code',
+        'C:\Program Files\nodejs\npm.cmd install -g @anthropic-ai/claude-code',
+        'npm i -g claude',
+        'npm --silent install -g x',
+        'npm ci',
+        'node "C:\Users\a\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\install.cjs"',
+        'pnpm add -g foo',
+        'yarn global add foo',
+        'bun install'
+    )) {
+        Assert-True (Test-PackageInstallProcess (New-FakeProcess 'node.exe' $cmd)) "missed: $cmd"
+    }
+}
+
+Test-Case 'long-lived package-manager processes are not mistaken for installs' {
+    # The expensive false positive: match these and closing a swarm does nothing.
+    foreach ($cmd in @(
+        'npm exec figma-developer-mcp --figma-api-key=x --stdio',
+        'npx -y @modelcontextprotocol/server-filesystem C:\Users\a',
+        'npm run dev',
+        'npm start',
+        'node server.js',
+        'cmd /k claude --dangerously-skip-permissions',
+        'git clone https://github.com/x/install-notes.git'
+    )) {
+        Assert-True (-not (Test-PackageInstallProcess (New-FakeProcess 'node.exe' $cmd))) "false positive: $cmd"
+    }
+    Assert-True (-not (Test-PackageInstallProcess (New-FakeProcess 'cmd.exe' $null))) 'no command line'
+}
+
+Test-Case 'a pane counts as installing when a descendant is' {
+    # How it actually appears: the pane runs Claude, Claude spawns the updater.
+    $updating = [pscustomobject]@{
+        Name = 'cmd.exe'; CommandLine = 'cmd /k claude --dangerously-skip-permissions'
+        Descendants = @((New-FakeProcess 'node.exe' 'npm install -g @anthropic-ai/claude-code'))
+    }
+    Assert-True (Test-ShellRunsPackageInstall $updating) 'descendant install must protect the pane'
+    Assert-True (Test-ShellRunsClaude $updating) 'and it is still a Claude pane'
+
+    $idle = [pscustomobject]@{
+        Name = 'cmd.exe'; CommandLine = 'cmd /k claude --dangerously-skip-permissions'
+        Descendants = @((New-FakeProcess 'claude.exe' 'claude --dangerously-skip-permissions'))
+    }
+    Assert-True (-not (Test-ShellRunsPackageInstall $idle)) 'an idle Claude pane is still fair game'
+}
+
+# ===========================================================================
 Section 'Tiling maths'
 # ===========================================================================
 # Mirrors the arrange script: square-ish, wider before taller.

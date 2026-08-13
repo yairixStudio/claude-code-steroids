@@ -409,6 +409,46 @@ function Test-ShellRunsClaude {
     return $false
 }
 
+# Claude keeps itself current by shelling out to `npm install -g`, whose last act
+# is renaming a staging directory into place. Stop-PaneSession ends every
+# descendant of a pane, updater included -- and an install killed mid-rename is
+# not one retry away from fine: the orphaned staging directory makes every later
+# install fail ENOTEMPTY, so `claude` stays "not recognised" until someone clears
+# it by hand. A pane with an install in flight is therefore left running. One
+# stray window is much the cheaper mistake.
+#
+# Matching installs rather than package managers is the whole trick. MCP servers
+# are launched as `npm exec`/`npx` and sit there for the life of the session, so
+# a broader match would spare every pane and turn closing a swarm into a no-op.
+# Hence a package manager AND a mutating verb -- plus install.cjs, which is how
+# claude-code's own postinstall step (the one that fetches the native binary)
+# shows up on a command line.
+$script:PackageInstallPatterns = @(
+    '(?:^|[\s"\\/])(?:npm-cli\.js|npm(?:\.cmd)?|pnpm(?:\.cmd)?|yarn(?:\.cmd)?|bun(?:\.exe)?)["\s]+(?:\S+\s+)*(?:install|i|ci|add|update|up|upgrade|rebuild|link)(?:\s|$)',
+    'install\.[cm]?js(?:$|[\s"])'
+)
+
+function Test-PackageInstallProcess {
+    param([psobject]$Process)
+
+    $cmd = $Process.CommandLine
+    if ([string]::IsNullOrEmpty($cmd)) { return $false }
+    foreach ($pattern in $script:PackageInstallPatterns) {
+        if ($cmd -match $pattern) { return $true }
+    }
+    return $false
+}
+
+function Test-ShellRunsPackageInstall {
+    param([psobject]$Shell)
+
+    if (Test-PackageInstallProcess $Shell) { return $true }
+    foreach ($d in $Shell.Descendants) {
+        if (Test-PackageInstallProcess $d) { return $true }
+    }
+    return $false
+}
+
 # A close action must never take out the session that asked for it. Run "Close
 # ALL Claude Terminals" from a Claude session living in Windows Terminal and the
 # sweep would find that pane too -- killing the shell you typed the command into

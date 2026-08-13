@@ -9,6 +9,9 @@
 #
 # Current-Space detection: same CGWindowList bounds-matching trick as
 # arrange-terminals.sh — needs no Accessibility/Screen Recording permission.
+#
+# Windows with a package install in flight are left open on purpose — see the
+# note above INSTALLER below.
 
 /usr/bin/osascript -l JavaScript - "$@" <<'JXA'
 function run(argv) {
@@ -68,22 +71,60 @@ if (mode === "space") {
 }
 
 if (targets.length === 0) return "Nothing to close";
+
+// A window is only ours to take if nothing on its ttys is halfway through a
+// package install. Claude Code updates itself by shelling out to `npm install
+// -g`, whose last step is renaming a staging directory into place — and pkill
+// lands on every process sharing the tty, updater included. What a badly timed
+// sweep leaves behind is not one retry away: the orphaned staging directory
+// makes every later install fail ENOTEMPTY, so `claude` stays "command not
+// found" until someone deletes it by hand. One window left open is the far
+// cheaper mistake.
+//
+// Matching installs and not package managers is the whole trick — MCP servers
+// launched as `npm exec`/`npx` sit on a tty for the life of the session, and
+// skipping those would make closing a swarm a no-op. So: a package manager AND
+// a mutating verb, plus install.cjs, which is how claude-code's own postinstall
+// (the part that downloads the 281MB native binary) shows up.
+const INSTALLER =
+  "(^|[[:space:]/])(npm-cli\\.js|npm|pnpm|yarn|bun)[[:space:]]" +
+  "([^[:space:]]+[[:space:]])*" +
+  "(install|i|ci|add|update|up|upgrade|rebuild|link)([[:space:]]|$)" +
+  "|install\\.[cm]?js";
+const installingOn = tty => {
+  try {
+    return me.doShellScript(
+      "/bin/ps -t " + tty + " -o args= 2>/dev/null | " +
+      "/usr/bin/grep -Eq '" + INSTALLER + "' && echo busy || true") === "busy";
+  } catch (e) { return false; }   // can't tell → treat as idle, as before
+};
+
+const busy = [];
+const doomed = targets.filter(t => {
+  if (t.ttys.some(installingOn)) { busy.push(t); return false; }
+  return true;
+});
+const note = busy.length === 0 ? "" :
+  " — left " + busy.length + " installing (" +
+  busy.map(t => t.ttys.join("+")).join(", ") + ")";
+
 if (dry) {
-  return "[dry-run] would close " + targets.length + " window(s): " +
-    targets.map(t => t.ttys.join("+")).join(", ");
+  return "[dry-run] would close " + doomed.length + " window(s): " +
+    doomed.map(t => t.ttys.join("+")).join(", ") + note;
 }
+if (doomed.length === 0) return "Nothing to close" + note;
 
 // Kill the sessions' processes first so closing never pops a dialog.
-targets.forEach(t => t.ttys.forEach(tty => {
+doomed.forEach(t => t.ttys.forEach(tty => {
   try { me.doShellScript("/usr/bin/pkill -t " + tty + " || true"); } catch (e) {}
 }));
 delay(0.5);
 
 // Close by window id — index-based references shift as windows disappear.
 let closed = 0;
-targets.forEach(t => {
+doomed.forEach(t => {
   try { term.windows.byId(t.id).close(); closed++; } catch (e) {}
 });
-return "Closed " + closed + " window(s)";
+return "Closed " + closed + " window(s)" + note;
 }
 JXA
