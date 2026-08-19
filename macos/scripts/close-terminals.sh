@@ -115,8 +115,15 @@ if (dry) {
 if (doomed.length === 0) return "Nothing to close" + note;
 
 // Kill the sessions' processes first so closing never pops a dialog.
+// Kill by explicit PID from a tty-scoped `ps -t` (the kernel filters by tty
+// before anything is inspected) — NOT `pkill -t`, which walks every PID on
+// the system and, on macOS 26 (Tahoe), makes TCC fire one "access data from
+// other apps" prompt per unrelated app it touches (WhatsApp, Music, …).
 doomed.forEach(t => t.ttys.forEach(tty => {
-  try { me.doShellScript("/usr/bin/pkill -t " + tty + " || true"); } catch (e) {}
+  try {
+    me.doShellScript(
+      "/bin/kill -- $(/bin/ps -t " + tty + " -o pid=) 2>/dev/null || true");
+  } catch (e) {}
 }));
 delay(0.5);
 

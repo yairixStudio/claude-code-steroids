@@ -34,12 +34,45 @@ defaults write pbs NSServicesStatus -dict-add \
   '"(null) - Arrange Terminals - runWorkflowAsService"' \
   '{ "enabled_context_menu" = 1; "enabled_services_menu" = 1; }'
 
-# 2c) Menu bar app + global hotkeys (⌃⌥C / ⌃⌥S / ⌃⌥T) — one lean compiled
-#     binary using NSStatusItem + RegisterEventHotKey, started at login as a
-#     LaunchAgent.
+# 2c) Menu bar app + global hotkeys (⌃⌥C / ⌃⌥S / ⌃⌥T) — NSStatusItem +
+#     RegisterEventHotKey, compiled into a real app bundle ("Claude
+#     Steroids.app") and started at login as a LaunchAgent. The bundle matters:
+#     permission prompts show the app's name instead of a raw binary path, and
+#     TCC keys grants to the stable bundle ID — which is what lets the app's
+#     own "Permissions" menu revoke or re-request them with tccutil.
 if command -v swiftc >/dev/null 2>&1; then
   echo "Compiling menu bar app (⌃⌥C session / ⌃⌥S steroids / ⌃⌥T arrange)…"
-  swiftc -O "$SCRIPT_DIR/scripts/steroids-menubar.swift" -o "$DEST/steroids-menubar"
+  BUNDLE_ID="com.yairixstudio.claude-steroids"
+  APPS="$HOME/Applications"
+  APP_BUNDLE="$APPS/Claude Steroids.app"
+  mkdir -p "$APPS"
+  rm -rf "$APP_BUNDLE"
+  mkdir -p "$APP_BUNDLE/Contents/MacOS"
+  swiftc -O "$SCRIPT_DIR/scripts/steroids-menubar.swift" \
+         -o "$APP_BUNDLE/Contents/MacOS/steroids-menubar"
+  cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>            <string>Claude Steroids</string>
+	<key>CFBundleDisplayName</key>     <string>Claude Steroids</string>
+	<key>CFBundleIdentifier</key>      <string>com.yairixstudio.claude-steroids</string>
+	<key>CFBundleVersion</key>         <string>2.0</string>
+	<key>CFBundleShortVersionString</key> <string>2.0</string>
+	<key>CFBundleExecutable</key>      <string>steroids-menubar</string>
+	<key>CFBundlePackageType</key>     <string>APPL</string>
+	<key>LSUIElement</key>             <true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Claude Steroids opens, arranges, and closes the Terminal windows that run your Claude Code sessions.</string>
+</dict>
+</plist>
+PLIST
+  # Ad-hoc signature so TCC identifies the app by bundle ID, not binary path —
+  # grants survive rebuilds and `tccutil reset … $BUNDLE_ID` can target them.
+  codesign --force --sign - "$APP_BUNDLE" 2>/dev/null || true
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" 2>/dev/null || true
+
   AGENT="$HOME/Library/LaunchAgents/com.yairixstudio.claude-steroids.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$AGENT" <<PLIST
@@ -48,7 +81,7 @@ if command -v swiftc >/dev/null 2>&1; then
 <plist version="1.0">
 <dict>
 	<key>Label</key>              <string>com.yairixstudio.claude-steroids</string>
-	<key>ProgramArguments</key>   <array><string>$DEST/steroids-menubar</string></array>
+	<key>ProgramArguments</key>   <array><string>$APP_BUNDLE/Contents/MacOS/steroids-menubar</string></array>
 	<key>RunAtLoad</key>          <true/>
 	<key>KeepAlive</key>          <dict><key>SuccessfulExit</key><false/></dict>
 	<key>LimitLoadToSessionType</key> <string>Aqua</string>
@@ -57,10 +90,11 @@ if command -v swiftc >/dev/null 2>&1; then
 </dict>
 </plist>
 PLIST
-  # Retire the older single-hotkey daemon, if present
+  # Retire the older single-hotkey daemon and the pre-bundle bare binary
   launchctl bootout "gui/$UID/com.yairixstudio.arrange-hotkey" 2>/dev/null || true
   rm -f "$HOME/Library/LaunchAgents/com.yairixstudio.arrange-hotkey.plist" "$DEST/arrange-hotkey"
   launchctl bootout "gui/$UID/com.yairixstudio.claude-steroids" 2>/dev/null || true
+  rm -f "$DEST/steroids-menubar"
   launchctl bootstrap "gui/$UID" "$AGENT"
 else
   echo "⚠️  swiftc not found — skipping the menu bar app and hotkeys."
@@ -117,8 +151,14 @@ How to use:
      this installer.)
   • Optional Dock button: drag "Arrange Terminals" from ~/Applications.
 
+Permissions:
+  • Nothing is requested at install or launch. The first time an action runs,
+    macOS asks once for Automation → Terminal ("Claude Steroids wants to
+    control Terminal"). Click Allow — that's the only permission it needs.
+  • Menu bar icon → Permissions shows a live ✓ for that grant and lets you
+    revoke/re-request it, open Privacy & Security, or reset all grants.
+
 First run notes:
-  • macOS will ask once for "Automation" permission (Terminal). Click OK.
   • If the menu items or the shortcut don't work yet, log out/in or relaunch
     Finder (hold Option, right-click the Finder Dock icon → Relaunch).
 

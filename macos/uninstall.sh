@@ -14,6 +14,9 @@ rm -rf "$SERVICES/Open in Claude Steroids.workflow"
 rm -rf "$SERVICES/Arrange Terminals.workflow"
 rm -rf "$HOME/.local/share/claude-code-steroids"
 rm -rf "$HOME/Applications/Arrange Terminals.app"
+rm -rf "$HOME/Applications/Claude Steroids.app"
+# Drop every permission grant the app accumulated (Automation → Terminal, …)
+/usr/bin/tccutil reset All com.yairixstudio.claude-steroids 2>/dev/null || true
 /usr/libexec/PlistBuddy -c \
   'Delete :NSServicesStatus:(null) - Arrange Terminals - runWorkflowAsService' \
   "$HOME/Library/Preferences/pbs.plist" 2>/dev/null || true

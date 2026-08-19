@@ -90,8 +90,12 @@ installer). Compiling them needs Xcode Command Line Tools (`xcode-select --insta
 Optional: drag **Arrange Terminals** from **~/Applications** to your Dock for a
 one-click tile button.
 
-- The first run asks for **Automation** permission (to let Terminal arrange windows) —
-  click **OK**.
+- **Permissions:** nothing is requested at install or launch. The first time an
+  action runs, macOS asks once for **Automation → Terminal** (“Claude Steroids
+  wants to control Terminal”) — click **Allow**; that's the only permission the
+  app needs. The menu bar's **Permissions** submenu shows a live ✓ for that
+  grant and lets you revoke it, re-request it, jump to Privacy & Security, or
+  reset every grant the app holds.
 - If the items don't appear, log out/in or relaunch Finder (Option-right-click the Finder dock icon → **Relaunch**).
 
 **Uninstall:** `zsh macos/uninstall.sh`
@@ -130,10 +134,16 @@ and the tray app is compiled locally with the `csc.exe` that ships with Windows.
   The Steroids action calls a small AppleScript that reads your screen size via
   `NSScreen` (no extra permissions), opens nine Terminal windows running
   `claude --dangerously-skip-permissions`, and tiles them into a 3×3 grid.
-  The menu bar app is a single ~100-line Swift file (`NSStatusItem` + Carbon's
+  The menu bar app is a single Swift file (`NSStatusItem` + Carbon's
   `RegisterEventHotKey` — true global hotkeys that beat the frontmost app's own
   shortcuts, no Accessibility permission needed), compiled locally by the installer
-  and started at login as a LaunchAgent. **Arrange Terminals** is a JXA script: it
+  into **Claude Steroids.app** (a signed bundle with a stable bundle ID, so
+  permission prompts show a real app name and its **Permissions** menu can manage
+  grants via `tccutil`) and started at login as a LaunchAgent. On macOS 26
+  (Tahoe), closing swarms kills processes by tty-scoped PID lookup rather than a
+  system-wide `pkill` sweep — the sweep is what used to make Tahoe's new
+  App-Data protection fire a permission prompt for every unrelated app
+  (WhatsApp, Music, …). **Arrange Terminals** is a JXA script: it
   reads on-screen window bounds via `CGWindowList` (which only reports the current
   Space), matches them to Terminal's scriptable windows, and retiles them into a
   `ceil(√n)`-column grid over the visible screen area.
