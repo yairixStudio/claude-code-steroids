@@ -23,6 +23,16 @@ $script:Pass = 0
 $script:Fail = 0
 $script:Failures = @()
 
+# Every script under test reads the settings file, so point the whole run at a
+# throwaway one: the suite must not depend on which agent you happen to have
+# selected, and must never rewrite your real choices. Child processes inherit
+# it, which is what makes the -DryRun tests below deterministic.
+$script:RealConfig = $env:STEROIDS_CONFIG
+$env:STEROIDS_CONFIG = Join-Path $env:TEMP 'steroids-tests-config.json'
+@'
+{ "version": 1, "agent": "claude", "columns": 3, "rows": 3, "yolo": true }
+'@ | Set-Content -LiteralPath $env:STEROIDS_CONFIG -Encoding UTF8
+
 function Test-Case {
     param([string]$Name, [scriptblock]$Body)
 
@@ -240,7 +250,7 @@ Test-Case 'a drive root does not lose its backslash to the closing quote' {
 }
 
 Test-Case 'the YOLO flag stays attached to its claude command' {
-    $got = Get-RoundTrip (@('new-tab', '-d', 'C:\Some Folder') + (Get-ClaudePaneCommand))
+    $got = Get-RoundTrip (@('new-tab', '-d', 'C:\Some Folder') + (Get-AgentPaneCommand))
     Assert-Equal 'claude --dangerously-skip-permissions' $got[-1] 'pane command must stay one argument'
 }
 
@@ -270,6 +280,33 @@ Test-Case 'arguments needing no quotes are left alone' {
     Assert-Equal '""' (Format-CommandLineArgument '') 'empty argument'
 }
 
+Test-Case 'a drive root keeps both its backslash and the pinned agent' {
+    # The exact shape the registry entry produces, parsed by the same function
+    # CreateProcess'd programs use. Before the pin moved ahead of the folder,
+    # this came back as the single argument  C:" -Agent claude .
+    $cmd = 'ps.exe -File "C:\s\g.ps1" -Agent claude "C:\"'
+    $parsed = [SteroidsWin]::ParseCommandLine($cmd)
+    Assert-Equal '-Agent' $parsed[1] 'named parameter survives'
+    Assert-Equal 'claude' $parsed[2] 'its value survives'
+    Assert-Equal 'C:"'    $parsed[3] 'the drive root arrives in the form Resolve-TargetDir repairs'
+    Assert-Equal 'C:\'    (Resolve-TargetDir $parsed[3]) 'and is repaired'
+}
+
+Test-Case 'non-ASCII folder names survive the trip to wt.exe' {
+    # The macOS side shredded these: zsh escapes whatever the current locale
+    # calls unprintable, and launchd gives Quick Actions no locale at all.
+    # PowerShell has no equivalent exposure -- it is UTF-16 strings end to end --
+    # but that is worth holding to rather than assuming.
+    foreach ($dir in @('C:\Users\a\אתר שאולי הורדה גיבוי',
+                       'C:\Users\a\日本語のフォルダ',
+                       'C:\Users\a\ünïcødé — dash',
+                       "C:\Users\a\don't stop")) {
+        $line = ConvertTo-WtCommandLine @('new-tab', '-d', $dir)
+        $parsed = [SteroidsWin]::ParseCommandLine("wt.exe $line")
+        Assert-Equal $dir $parsed[3] "mangled: $dir"
+    }
+}
+
 Test-Case 'the real grid command line round-trips argument for argument' {
     $args9 = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
     $line  = ConvertTo-WtCommandLine $args9
@@ -281,7 +318,7 @@ Test-Case 'the real grid command line round-trips argument for argument' {
 # ===========================================================================
 Section 'Claude session detection'
 # ===========================================================================
-# What "Close ALL Claude Terminals" fires at. The native installer leaves a
+# What "Close ALL Agent Sessions" fires at. The native installer leaves a
 # claude.exe in the tree; an npm install runs the CLI as node.exe with the
 # package path on its command line, and matching node by name would take out
 # every unrelated Node process on the machine.
@@ -292,17 +329,17 @@ function New-FakeProcess {
 }
 
 Test-Case 'a native claude.exe is recognised' {
-    Assert-True (Test-ClaudeProcess (New-FakeProcess 'claude.exe' 'claude --dangerously-skip-permissions')) 'by name'
+    Assert-True (Test-AgentProcess (New-FakeProcess 'claude.exe' 'claude --dangerously-skip-permissions')) 'by name'
 }
 
 Test-Case 'the pane shell we launch is recognised by its command line' {
-    Assert-True (Test-ClaudeProcess (New-FakeProcess 'cmd.exe' 'cmd /k claude --dangerously-skip-permissions')) 'cmd pane'
-    Assert-True (Test-ClaudeProcess (New-FakeProcess 'cmd.exe' '"C:\Users\a b\.local\bin\claude.exe" --resume')) 'quoted full path'
+    Assert-True (Test-AgentProcess (New-FakeProcess 'cmd.exe' 'cmd /k claude --dangerously-skip-permissions')) 'cmd pane'
+    Assert-True (Test-AgentProcess (New-FakeProcess 'cmd.exe' '"C:\Users\a b\.local\bin\claude.exe" --resume')) 'quoted full path'
 }
 
 Test-Case 'an npm-installed Claude running under node is recognised' {
     $npm = '"C:\Program Files\nodejs\node.exe" "C:\Users\a\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js"'
-    Assert-True (Test-ClaudeProcess (New-FakeProcess 'node.exe' $npm)) 'npm install'
+    Assert-True (Test-AgentProcess (New-FakeProcess 'node.exe' $npm)) 'npm install'
 }
 
 Test-Case 'unrelated processes are left alone' {
@@ -311,14 +348,19 @@ Test-Case 'unrelated processes are left alone' {
         (New-FakeProcess 'cmd.exe'     'cmd /k'),
         (New-FakeProcess 'notepad.exe' 'notepad claude.md'),
         (New-FakeProcess 'git.exe'     'git clone https://github.com/x/claude-notes.git'),
-        (New-FakeProcess 'cmd.exe'     $null)
+        (New-FakeProcess 'cmd.exe'     $null),
+        # "codex" is a word people name folders after, so the package pattern
+        # requires the @openai scope. A project directory must not read as a
+        # session and get swept up with one.
+        (New-FakeProcess 'node.exe'    '"C:\Program Files\nodejs\node.exe" C:\src\codex\build.js'),
+        (New-FakeProcess 'code.exe'    'Code.exe C:\Users\a\codex\notes.md')
     )) {
-        Assert-True (-not (Test-ClaudeProcess $p)) "false positive on: $($p.CommandLine)"
+        Assert-True (-not (Test-AgentProcess $p)) "false positive on: $($p.CommandLine)"
     }
 }
 
 Test-Case 'the pane hosting this very process is recognised as self' {
-    # What stops "Close ALL Claude Terminals" from closing the session that ran
+    # What stops "Close ALL Agent Sessions" from closing the session that ran
     # it -- including this test run, which exercises the real thing.
     $hosting = [pscustomobject]@{
         ProcessId = 4; Name = 'cmd.exe'; CommandLine = 'cmd /k'
@@ -340,7 +382,7 @@ Test-Case 'the live sweep would spare the session running these tests' {
     # A guard, not a unit test: if this stops holding, the -IncludeLive run
     # below would kill its own terminal partway through.
     $sweep = @(Get-TerminalPaneShell |
-               Where-Object { Test-ShellRunsClaude $_ } |
+               Where-Object { Test-ShellRunsAgent $_ } |
                Where-Object { -not (Test-ShellHostsSelf $_) })
     foreach ($s in $sweep) {
         Assert-True ([int]$s.ProcessId -ne $PID) 'the sweep targeted this process'
@@ -355,13 +397,13 @@ Test-Case 'a shell counts as Claude when a descendant is Claude' {
         Name = 'cmd.exe'; CommandLine = 'cmd /k'
         Descendants = @((New-FakeProcess 'node.exe' 'node C:\x\@anthropic-ai\claude-code\cli.js'))
     }
-    Assert-True (Test-ShellRunsClaude $shell) 'descendant match'
+    Assert-True (Test-ShellRunsAgent $shell) 'descendant match'
 
     $plain = [pscustomobject]@{
         Name = 'cmd.exe'; CommandLine = 'cmd /k'
         Descendants = @((New-FakeProcess 'git.exe' 'git status'))
     }
-    Assert-True (-not (Test-ShellRunsClaude $plain)) 'plain shell must be left alone'
+    Assert-True (-not (Test-ShellRunsAgent $plain)) 'plain shell must be left alone'
 }
 
 # ===========================================================================
@@ -414,7 +456,7 @@ Test-Case 'a pane counts as installing when a descendant is' {
         Descendants = @((New-FakeProcess 'node.exe' 'npm install -g @anthropic-ai/claude-code'))
     }
     Assert-True (Test-ShellRunsPackageInstall $updating) 'descendant install must protect the pane'
-    Assert-True (Test-ShellRunsClaude $updating) 'and it is still a Claude pane'
+    Assert-True (Test-ShellRunsAgent $updating) 'and it is still a Claude pane'
 
     $idle = [pscustomobject]@{
         Name = 'cmd.exe'; CommandLine = 'cmd /k claude --dangerously-skip-permissions'
@@ -487,17 +529,30 @@ Test-Case 'pane shells resolve to real processes' {
 # ===========================================================================
 Section 'Installer / uninstaller round trip'
 # ===========================================================================
-$menuKeys = @(
-    'HKCU:\Software\Classes\Directory\shell\OpenInClaude',
-    'HKCU:\Software\Classes\Directory\shell\ClaudeSteroids',
-    'HKCU:\Software\Classes\Directory\Background\shell\OpenInClaude',
-    'HKCU:\Software\Classes\Directory\Background\shell\ClaudeSteroids'
-)
+# Six entries, each registered under both roots: right-click ON a folder, and
+# right-click on a folder's empty background.
+$menuNames = @('OpenAgentHere', 'AgentSteroids',
+               'OpenInClaude', 'ClaudeSteroids',
+               'OpenInCodex', 'CodexSteroids')
+$menuKeys = foreach ($root in @('Directory', 'Directory\Background')) {
+    foreach ($n in $menuNames) { "HKCU:\Software\Classes\$root\shell\$n" }
+}
 
 if ($IncludeLive) {
     $installer   = Join-Path $root 'install.ps1'
     $uninstaller = Join-Path $root 'uninstall.ps1'
     $dest        = Join-Path $env:LOCALAPPDATA 'claude-code-steroids'
+    $liveConfig  = Join-Path $env:APPDATA 'claude-code-steroids\config.json'
+
+    # These tests run the real uninstaller, which now takes the settings folder
+    # with it. Scripts it deletes come back on the next install; the agent you
+    # picked does not, so put it back afterwards. STEROIDS_CONFIG keeps the rest
+    # of the suite off this file, but the installer and uninstaller address it
+    # by its real path.
+    $savedConfig = $null
+    if (Test-Path -LiteralPath $liveConfig) {
+        $savedConfig = Get-Content -LiteralPath $liveConfig -Raw
+    }
 
     Test-Case 'the installer completes without errors' {
         $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NoTray 2>&1
@@ -505,8 +560,21 @@ if ($IncludeLive) {
         Assert-True (($out -join "`n") -notmatch 'not recognized') 'installer printed a command-not-found error'
     }
 
-    Test-Case 'all four context-menu entries are registered' {
+    Test-Case 'all twelve context-menu entries are registered' {
         foreach ($k in $menuKeys) { Assert-True (Test-Path $k) "missing $k" }
+    }
+
+    Test-Case 'the per-agent entries pin their agent on the command line' {
+        foreach ($pair in @(@('OpenInClaude', 'claude'), @('ClaudeSteroids', 'claude'),
+                            @('OpenInCodex', 'codex'),   @('CodexSteroids', 'codex'))) {
+            $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Directory\shell\$($pair[0])\command").'(default)'
+            Assert-True ($cmd -match "-Agent $($pair[1]) `"%V`"$") "$($pair[0]) does not pin $($pair[1]): $cmd"
+        }
+        # The neutral pair must pin nothing, or it could not follow Settings.
+        foreach ($n in @('OpenAgentHere', 'AgentSteroids')) {
+            $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Directory\shell\$n\command").'(default)'
+            Assert-True ($cmd -notmatch '-Agent') "$n should not pin an agent: $cmd"
+        }
     }
 
     Test-Case 'the Steroids label survives the round trip through the registry' {
@@ -521,13 +589,17 @@ if ($IncludeLive) {
             $cmd = (Get-ItemProperty (Join-Path $k 'command')).'(default)'
             Assert-True ($cmd -match '-File "([^"]+)"') "no -File in: $cmd"
             Assert-True (Test-Path $matches[1]) "missing script: $($matches[1])"
-            Assert-True ($cmd -match '"%V"$') "command must end with the folder placeholder: $cmd"
+            # The folder placeholder must be LAST. Explorer expands a drive root
+            # to C:\ , whose trailing backslash escapes the closing quote and
+            # swallows whatever follows into the same argument -- so anything
+            # after "%V" is an argument the script will never see.
+            Assert-True ($cmd -match '"%V"$') "the folder placeholder must be the last argument: $cmd"
         }
     }
 
     Test-Case 'every script the menu and tray call was deployed' {
         foreach ($n in @('open-in-claude.ps1', 'steroids-grid.ps1', 'arrange-terminals.ps1',
-                         'close-terminals.ps1', 'steroids-common.ps1')) {
+                         'close-terminals.ps1', 'steroids-common.ps1', 'steroids-settings.ps1')) {
             Assert-True (Test-Path (Join-Path $dest $n)) "missing $n in $dest"
         }
     }
@@ -557,6 +629,28 @@ if ($IncludeLive) {
         $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $uninstaller 2>&1
         Assert-Equal 0 $LASTEXITCODE 'second uninstall failed'
         Assert-True (($out -join '') -match 'Nothing to uninstall') 'expected the no-op message'
+    }
+
+    Test-Case 'the installer seeds settings, and re-running keeps your choices' {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NoTray | Out-Null
+        Assert-True (Test-Path -LiteralPath $liveConfig) "installer did not seed $liveConfig"
+        Assert-Equal 'claude' (Get-SteroidsConfig -Path $liveConfig).Agent 'seeded agent'
+
+        Save-SteroidsConfig ([pscustomobject]@{
+            Agent = 'codex'; Yolo = $false; Columns = 4; Rows = 4 }) -Path $liveConfig
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -NoTray | Out-Null
+
+        $after = Get-SteroidsConfig -Path $liveConfig
+        Assert-Equal 'codex' $after.Agent 'reinstalling reset the agent'
+        Assert-Equal 4 $after.Columns 'reinstalling reset the grid'
+    }
+
+    # Leave the machine as we found it: uninstall what the tests installed, then
+    # hand back whatever settings were there before the run.
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $uninstaller | Out-Null
+    if ($null -ne $savedConfig) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $liveConfig) | Out-Null
+        Set-Content -LiteralPath $liveConfig -Value $savedConfig -Encoding UTF8
     }
 
     # -------------------------------------------------------------------
@@ -785,6 +879,142 @@ if ($IncludeLive) {
 }
 
 # ===========================================================================
+Section 'Settings'
+# ===========================================================================
+# One JSON file drives the agent, the grid and the YOLO flag for every entry
+# point. It is also the one file a user is likely to hand-edit, so the reader
+# has to survive whatever comes back.
+
+function Use-TempConfig {
+    param([string]$Json, [scriptblock]$Body)
+
+    $path = Join-Path $env:TEMP ('steroids-cfg-' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        if ($null -ne $Json) { Set-Content -LiteralPath $path -Value $Json -Encoding UTF8 }
+        & $Body (Get-SteroidsConfig -Path $path) $path
+    } finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+}
+
+Test-Case 'a missing settings file yields the documented defaults' {
+    $cfg = Get-SteroidsConfig -Path (Join-Path $env:TEMP 'no-such-steroids-config.json')
+    Assert-Equal 'claude' $cfg.Agent 'agent'
+    Assert-Equal 3 $cfg.Columns 'columns'
+    Assert-Equal 3 $cfg.Rows 'rows'
+    Assert-True ([bool]$cfg.Yolo) 'yolo'
+}
+
+Test-Case 'a complete settings file is read back field for field' {
+    Use-TempConfig '{ "version": 1, "agent": "codex", "columns": 4, "rows": 2, "yolo": false }' {
+        param($cfg)
+        Assert-Equal 'codex' $cfg.Agent 'agent'
+        Assert-Equal 4 $cfg.Columns 'columns'
+        Assert-Equal 2 $cfg.Rows 'rows'
+        Assert-True (-not $cfg.Yolo) 'yolo'
+    }
+}
+
+Test-Case 'nonsense in the file never stops a hotkey working' {
+    foreach ($json in @(
+        '{ not json at all',
+        '{}',
+        '[]',
+        '{ "agent": "gpt-9", "columns": 99, "rows": 0, "yolo": "sure" }',
+        '{ "agent": null, "columns": "three" }'
+    )) {
+        Use-TempConfig $json {
+            param($cfg)
+            Assert-Equal 'claude' $cfg.Agent "agent from: $json"
+            Assert-Equal 3 $cfg.Columns "columns from: $json"
+            Assert-Equal 3 $cfg.Rows "rows from: $json"
+        }
+    }
+}
+
+Test-Case 'saving and reading back is lossless' {
+    $path = Join-Path $env:TEMP ('steroids-cfg-rt-' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        $written = [pscustomobject]@{ Agent = 'codex'; Yolo = $false; Columns = 4; Rows = 4 }
+        Save-SteroidsConfig $written -Path $path
+        $read = Get-SteroidsConfig -Path $path
+        Assert-Equal 'codex' $read.Agent 'agent'
+        Assert-Equal 4 $read.Columns 'columns'
+        Assert-Equal 4 $read.Rows 'rows'
+        Assert-True (-not $read.Yolo) 'yolo'
+    } finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+}
+
+Test-Case 'the grid boundaries are the ones the settings window offers' {
+    # 1x1 and 8x8 are the edges of what the file accepts; a step past either is
+    # not clamped to the edge but discarded, so the default survives.
+    foreach ($case in @(@(1, 1), @(8, 8))) {
+        Use-TempConfig ('{ "columns": ' + $case[0] + ', "rows": ' + $case[1] + ' }') {
+            param($cfg)
+            Assert-Equal $case[0] $cfg.Columns 'columns'
+            Assert-Equal $case[1] $cfg.Rows 'rows'
+        }
+    }
+    foreach ($bad in @(0, 9, -1)) {
+        Use-TempConfig ('{ "columns": ' + $bad + ' }') {
+            param($cfg)
+            Assert-Equal 3 $cfg.Columns "columns from $bad"
+        }
+    }
+}
+
+Test-Case 'each agent contributes its own flag, and only when YOLO is on' {
+    $claudeOn  = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $true })
+    $claudeOff = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $false })
+    $codexOn   = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'codex';  Yolo = $true })
+    $codexOff  = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'codex';  Yolo = $false })
+
+    Assert-Equal 'claude --dangerously-skip-permissions' $claudeOn[2] 'claude YOLO'
+    Assert-Equal 'claude' $claudeOff[2] 'claude plain'
+    Assert-Equal 'codex --dangerously-bypass-approvals-and-sandbox' $codexOn[2] 'codex YOLO'
+    Assert-Equal 'codex' $codexOff[2] 'codex plain'
+
+    # cmd /k with the command as ONE argument is what makes wt's quoting land as
+    # two tokens rather than a program named "claude --flag".
+    foreach ($c in @($claudeOn, $codexOff)) {
+        Assert-Equal 'cmd' $c[0] 'host'
+        Assert-Equal '/k'  $c[1] 'switch'
+        Assert-Equal 3 $c.Count 'argument count'
+    }
+}
+
+Test-Case 'an unknown agent falls back to Claude rather than launching nothing' {
+    $agent = Get-SteroidsAgent 'nope'
+    Assert-Equal 'claude' $agent.Id 'fallback agent'
+    Assert-Equal 'codex' (Get-SteroidsAgent 'codex').Id 'known agent'
+}
+
+Test-Case 'the grid script honours the configured size when none is passed' {
+    $path = Join-Path $env:TEMP ('steroids-cfg-grid-' + [guid]::NewGuid().ToString('N') + '.json')
+    $previous = $env:STEROIDS_CONFIG
+    try {
+        '{ "agent": "claude", "columns": 2, "rows": 2, "yolo": true }' |
+            Set-Content -LiteralPath $path -Encoding UTF8
+        $env:STEROIDS_CONFIG = $path
+        $a = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
+        $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count +
+                 @($a | Where-Object { $_ -eq 'new-tab' }).Count
+        Assert-Equal 4 $panes 'pane count came from the settings file'
+    } finally {
+        $env:STEROIDS_CONFIG = $previous
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case 'an explicit -Columns still overrides the settings file' {
+    $a = @(& $gridScript -Dir $env:USERPROFILE -Columns 4 -Rows 1 -DryRun)
+    $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count +
+             @($a | Where-Object { $_ -eq 'new-tab' }).Count
+    Assert-Equal 4 $panes 'pane count'
+}
+
+# ===========================================================================
+Remove-Item -LiteralPath $env:STEROIDS_CONFIG -Force -ErrorAction SilentlyContinue
+$env:STEROIDS_CONFIG = $script:RealConfig
+
 Write-Host ''
 Write-Host ('-' * 60)
 if ($script:Fail -eq 0) {

@@ -61,7 +61,7 @@
 					<key>COMMAND_STRING</key>
 					<string>for f in "$@"; do
   if [ -d "$f" ]; then dir="$f"; else dir="$(dirname "$f")"; fi
-  "$HOME/.local/share/claude-code-steroids"/steroids-grid.sh "$dir" --agent claude
+  "$HOME/.local/share/claude-code-steroids"/steroids-grid.sh "$dir" --agent codex
   break
 done</string>
 					<key>CheckedForUserDefaultShell</key>

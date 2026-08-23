@@ -2,9 +2,14 @@
 // Lean system tray app: a small grid icon by the clock with three actions, each
 // also bound to a global hotkey (RegisterHotKey — works from any app):
 //
-//   Ctrl+Alt+C  New Claude Session        (one Windows Terminal window, YOLO mode, in %USERPROFILE%)
-//   Ctrl+Alt+S  Steroids Mode (3x3 grid)  (nine panes in one maximized window, in %USERPROFILE%)
-//   Ctrl+Alt+T  Arrange Terminals         (retile this virtual desktop's Terminal windows)
+//   Ctrl+Alt+C  New Session        (one Windows Terminal window, in %USERPROFILE%)
+//   Ctrl+Alt+S  Steroids Mode      (a grid of panes in one maximized window, in %USERPROFILE%)
+//   Ctrl+Alt+T  Arrange Terminals  (retile this virtual desktop's Terminal windows)
+//
+// Which agent those sessions run - Claude Code or OpenAI Codex - is a setting,
+// not a hardcode. "Settings..." opens steroids-settings.ps1, which writes
+// %APPDATA%\claude-code-steroids\config.json; the scripts read the same file,
+// so one switch there changes every entry point at once.
 //
 // The Quit submenu tears a swarm back down: it ends the pane processes first, so
 // Terminal retires the panes without ever asking "close all panes?".
@@ -16,7 +21,9 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -39,22 +46,34 @@ class SteroidsTray : Form
     readonly string scriptsDir =
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
         + @"\claude-code-steroids";
+    readonly string configPath =
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
+        + @"\claude-code-steroids\config.json";
     readonly NotifyIcon trayIcon;
     IntPtr iconHandle = IntPtr.Zero;
+    ToolStripMenuItem sessionItem, steroidsItem;
 
     SteroidsTray()
     {
         ShowInTaskbar = false;
 
         var menu = new ContextMenuStrip();
-        AddItem(menu, "New Claude Session",        "Ctrl+Alt+C", "open-in-claude.ps1",   "");
-        AddItem(menu, "Steroids Mode (3x3 Grid)",  "Ctrl+Alt+S", "steroids-grid.ps1",    "");
-        AddItem(menu, "Arrange Terminals",         "Ctrl+Alt+T", "arrange-terminals.ps1", "");
+        sessionItem  = AddItem(menu, "New Session",    "Ctrl+Alt+C", "open-in-claude.ps1",    "");
+        steroidsItem = AddItem(menu, "Steroids Mode",  "Ctrl+Alt+S", "steroids-grid.ps1",     "");
+        AddItem(menu, "Arrange Terminals",             "Ctrl+Alt+T", "arrange-terminals.ps1", "");
         menu.Items.Add(new ToolStripSeparator());
+        AddItem(menu, "Settings...", "", "steroids-settings.ps1", "");
+        menu.Items.Add(new ToolStripSeparator());
+
+        // The two launch items name the selected agent and the configured grid
+        // size, so the menu answers "what will this actually open?" without
+        // going into Settings first. Re-read on every open, because Settings is
+        // a separate process and nothing tells us when it saved.
+        menu.Opening += delegate { Retitle(); };
 
         var quitMenu = new ContextMenuStrip();
         AddItem(quitMenu, "Close Terminals on This Desktop", "", "close-terminals.ps1", "-Mode desktop");
-        AddItem(quitMenu, "Close ALL Claude Terminals",      "", "close-terminals.ps1", "-Mode claude");
+        AddItem(quitMenu, "Close ALL Agent Sessions",        "", "close-terminals.ps1", "-Mode agents");
         quitMenu.Items.Add(new ToolStripSeparator());
         var quitApp = new ToolStripMenuItem("Quit Tray App");
         quitApp.Click += delegate { ExitApp(); };
@@ -66,12 +85,44 @@ class SteroidsTray : Form
 
         trayIcon = new NotifyIcon();
         trayIcon.Icon = BuildGridIcon();
-        trayIcon.Text = "Claude Code — Steroids";
         trayIcon.ContextMenuStrip = menu;
         trayIcon.Visible = true;
         trayIcon.DoubleClick += delegate { RunScript("open-in-claude.ps1", ""); };
 
+        Retitle();
         RegisterHotKeys();
+    }
+
+    // Just enough of the config to label two menu items. The full read/write
+    // lives in steroids-common.ps1 where the test suite can reach it, so this
+    // stays a display detail: anything it cannot find falls back to what the
+    // PowerShell side defaults to, and nothing here ever writes the file.
+    string ConfigValue(string key, string fallback)
+    {
+        try
+        {
+            if (!File.Exists(configPath)) return fallback;
+            var json = File.ReadAllText(configPath);
+            var m = Regex.Match(json, "\"" + key + "\"\\s*:\\s*\"?([A-Za-z0-9_.-]+)\"?");
+            return m.Success ? m.Groups[1].Value : fallback;
+        }
+        catch { return fallback; }
+    }
+
+    int ConfigInt(string key, int fallback)
+    {
+        int v;
+        if (!int.TryParse(ConfigValue(key, ""), out v)) return fallback;
+        return (v >= 1 && v <= 8) ? v : fallback;
+    }
+
+    void Retitle()
+    {
+        string label = ConfigValue("agent", "claude") == "codex" ? "OpenAI Codex" : "Claude Code";
+        int panes = ConfigInt("columns", 3) * ConfigInt("rows", 3);
+        sessionItem.Text  = "New Session - " + label;
+        steroidsItem.Text = "Steroids Mode - " + panes + "x " + label;
+        trayIcon.Text = "Claude Code - Steroids (" + label + ")";
     }
 
     // A 3x3 grid of squares, matching the macOS menu bar's square.grid.3x3 —
@@ -115,13 +166,14 @@ class SteroidsTray : Form
         }
     }
 
-    void AddItem(ContextMenuStrip menu, string title, string shortcut, string script, string args)
+    ToolStripMenuItem AddItem(ContextMenuStrip menu, string title, string shortcut, string script, string args)
     {
         var item = new ToolStripMenuItem(title);
         if (shortcut.Length > 0) item.ShortcutKeyDisplayString = shortcut;
         string s = script, a = args;
         item.Click += delegate { RunScript(s, a); };
         menu.Items.Add(item);
+        return item;
     }
 
     void RunScript(string name, string args)

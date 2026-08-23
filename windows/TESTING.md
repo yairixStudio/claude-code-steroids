@@ -1,0 +1,434 @@
+# Windows Testing Guide
+
+**You are the first person to run this Windows code.** Everything in `windows/` was
+written and reviewed on a Mac, where PowerShell and `csc.exe` do not exist — so not one
+line of it has been executed or even compiled. The macOS half is fully tested (91
+automated tests, plus live checks); this half is not. That is exactly what this guide is
+for.
+
+Take about **30 minutes**. Parts 1–2 are automated and take five. Parts 3–5 are manual,
+and they cover the surfaces no test can reach.
+
+Report back with the template at the bottom. **A failure is a useful result** — please
+send the exact error text rather than trying to fix it.
+
+---
+
+## What this project is
+
+Right-click a folder → open a coding-agent session (Claude Code or OpenAI Codex) in it.
+Or open **nine at once**, tiled in a grid. Plus a tray icon and global hotkeys.
+
+Recent work made the agent a **setting** rather than a hardcode, added a **Settings
+window**, and added **six** context-menu entries: two that follow whichever agent is
+selected, and four that pin one agent regardless.
+
+---
+
+## Before you start
+
+### Requirements
+
+| | |
+|---|---|
+| Windows 10 or 11 | — |
+| [Windows Terminal](https://aka.ms/terminal) | `wt.exe` must be on `PATH` |
+| At least one agent CLI | `npm i -g @anthropic-ai/claude-code` and/or `npm i -g @openai/codex` |
+| .NET Framework `csc.exe` | Ships with Windows — nothing to install |
+
+No administrator rights are needed. Everything is written under your user (`HKCU`,
+`%LOCALAPPDATA%`, `%APPDATA%`).
+
+Check your starting point:
+
+```powershell
+wt.exe --version
+Get-Command claude, codex -ErrorAction SilentlyContinue | Select-Object Name, Source
+$PSVersionTable.PSVersion
+```
+
+You need Windows Terminal and **at least one** agent. Having both is better — four of the
+six context-menu entries are agent-specific. If you only have one, say so in your report
+and skip the checks for the other.
+
+### Safety — read this one
+
+Both launch actions default to the agent's **skip-all-approvals** flag
+(`--dangerously-skip-permissions` for Claude, `--dangerously-bypass-approvals-and-sandbox`
+for Codex). An agent started that way reads, edits and runs commands **without asking**,
+and Codex's flag drops its sandbox as well.
+
+**Before any manual test, turn that off** (Part 3, step 2 shows you where) and do every
+launch test in a **throwaway folder**:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\steroids-scratch" | Out-Null
+```
+
+You are testing whether a window opens in the right place with the right command on its
+prompt. You never need to let an agent actually do anything.
+
+### What the tests do to your machine
+
+| | |
+|---|---|
+| Part 1 (offline suite) | Nothing. Reads the repo, uses a throwaway config in `%TEMP%`. |
+| Part 2 (live suite) | **Really installs and uninstalls.** Opens and closes Terminal windows using a placeholder command — never a real agent. Backs up and restores your settings file. |
+| Parts 3–5 | Install for real, then uninstall at the end. |
+
+If you already use this project, Part 2 will uninstall it. Part 5 reinstalls it.
+
+---
+
+## Part 1 — The offline test suite
+
+```powershell
+cd <wherever you cloned it>
+powershell -ExecutionPolicy Bypass -File .\windows\tests\run-tests.ps1
+```
+
+**Expected:** a list of `PASS` lines and, at the end, `All N tests passed.` — and exit
+code 0. Anything other than that last line is a failure worth reporting.
+
+If PowerShell refuses to run the file at all, that is your execution policy — the
+`-ExecutionPolicy Bypass` above should already handle it, but see Troubleshooting.
+
+What it covers, and why each section exists:
+
+| Section | Why it is there |
+|---|---|
+| **Encoding** | Every `.ps1` and `.cs` must be ASCII-only or carry a UTF-8 BOM. Windows PowerShell reads a BOM-less file in the ANSI code page, and an em dash decoding into three characters once closed a string early and crashed the installer before it registered anything. |
+| **Resolve-TargetDir** | Explorer hands the clicked folder over as `%V`. At a drive root that is `C:\`, whose trailing backslash escapes the closing quote, so the script receives `C:"`. |
+| **Grid construction** | Pane count tracks columns × rows; split fractions use an invariant decimal point (a comma-decimal locale would emit `0,6667` and `wt` would reject every split). |
+| **Command-line quoting** | Built by hand and checked against Windows' own `CommandLineToArgvW`, not against a second reading of the rules. Includes a drive root with a pinned agent, and non-ASCII folder names. |
+| **Agent session detection** | What the close actions fire at — and, more importantly, what they must leave alone. |
+| **What a close action must not interrupt** | A pane running `npm install -g` is spared: killing Claude's own updater mid-rename breaks the install permanently, not just for now. |
+| **Settings** | Reading, saving, and surviving a config hand-edited into nonsense. |
+
+### If something fails here
+
+Send the failing lines verbatim. Every test prints what it expected and what it got.
+
+---
+
+## Part 2 — The live test suite
+
+This one installs for real, compiles the tray app, opens Terminal windows and closes them
+again. Close anything you care about in Windows Terminal first.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\tests\run-tests.ps1 -IncludeLive
+```
+
+**Expected:** `All N tests passed.` again, with a higher N than Part 1. Takes a couple of
+minutes, and windows will open and close on their own — that is the point.
+
+It additionally checks that the installer completes, that all twelve context-menu
+registry entries appear, that the four pinned entries really pin their agent, that the
+tray app compiles with the Windows C# compiler, that the uninstaller removes every trace,
+and that uninstalling twice is harmless.
+
+> The panes it opens run `cmd /k prompt STEROIDS_TEST_PANE$` — a marker, never an agent.
+> Every window it closes is looked up by that marker.
+
+**The most likely thing to fail here is the tray app compile.** If it does, send the whole
+`csc` error block.
+
+---
+
+## Part 3 — Install and first look
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\install.ps1
+```
+
+**Expected:** `Installed.` in green, then a summary of the hotkeys and Settings. A tray
+icon — a small 3×3 grid of white squares — appears next to the clock.
+
+### 1. Tray menu
+
+Right-click the tray icon.
+
+- [ ] The menu opens
+- [ ] The first item reads **New Session - Claude Code** (or `- OpenAI Codex`, whichever is selected)
+- [ ] The second reads **Steroids Mode - 9x Claude Code**
+- [ ] **Arrange Terminals**, **Settings...**, and a **Quit** submenu are present
+- [ ] Hovering the icon shows a tooltip naming the selected agent
+
+> The first two titles are re-read from the settings file every time the menu opens.
+> Later, after you change the agent, they must change with it.
+
+### 2. Settings window — **please spend the most time here**
+
+This is the least-verified part of the whole project: a WinForms dialog whose event
+wiring has never run. Click **Settings...**.
+
+- [ ] A window titled **Claude Steroids - Settings** opens
+- [ ] It shows: **Agent** (two radio buttons), **Grid** (a dropdown), **Autonomy** (a checkbox), a hotkey reminder, and a **Close** button
+- [ ] Under the radio buttons, a line reads `OK  C:\...\claude.cmd` (or similar) — or `not found - npm i -g ...` in red if that CLI is missing
+- [ ] Under the checkbox, a line reads `Runs:  claude --dangerously-skip-permissions`
+
+Now exercise it. **There is no OK button — every change saves the moment you click.**
+
+- [ ] Click **OpenAI Codex**. The status line and the `Runs:` line both update immediately
+- [ ] **Untick "Skip approval prompts."** The `Runs:` line drops the flag entirely, leaving just `Runs:  codex` — *leave it unticked for the rest of this guide*
+- [ ] Change **Grid** to `2 x 2 - 4 sessions`
+- [ ] Click **Close**
+- [ ] Reopen Settings — every choice is still there
+- [ ] Right-click the tray icon — the titles now say **OpenAI Codex** and **4x**
+
+Confirm it reached disk:
+
+```powershell
+Get-Content "$env:APPDATA\claude-code-steroids\config.json"
+```
+
+- [ ] Shows `"agent": "codex"`, `"columns": 2`, `"rows": 2`, `"yolo": false`
+
+Then set it back to **Claude Code**, grid **3 x 3**, and leave Autonomy **off**.
+
+### 3. Global hotkeys
+
+From any app — a browser, Notepad, anything:
+
+- [ ] **Ctrl+Alt+C** opens one Windows Terminal window in your user folder
+- [ ] **Ctrl+Alt+S** opens one maximized window split into nine panes
+- [ ] **Ctrl+Alt+T** retiles the Terminal windows on this virtual desktop into a grid
+
+With Autonomy off, each pane sits at the agent's normal approval prompt — nothing runs
+unattended. Close the windows when done.
+
+> If a hotkey does nothing, another app already owns that combination. The tray app shows
+> a balloon tip saying so at startup. Note which one and move on — the menu still works.
+
+---
+
+## Part 4 — The context menu
+
+Right-click a folder in Explorer. **On Windows 11 these live under "Show more options."**
+
+- [ ] All six entries are present:
+  - Open Coding Agent Here
+  - Steroids Mode (9x Grid)
+  - Open in Claude
+  - Open in Claude — Steroids (9x)
+  - Open in Codex
+  - Open in Codex — Steroids (9x)
+- [ ] They also appear when right-clicking the **empty background** inside an open folder
+
+### 1. The neutral pair follows Settings
+
+With the agent set to **Claude Code**, on your scratch folder:
+
+- [ ] **Open Coding Agent Here** → a window opens **in that folder**, prompt shows `claude`
+- [ ] Switch the agent to **OpenAI Codex** in Settings, then click it again → same folder, now `codex`
+- [ ] Set it back to **Claude Code**
+
+### 2. The pinned four ignore Settings
+
+That is the whole point of them. With the agent set to **Claude Code**:
+
+- [ ] **Open in Codex** → opens **codex**, not claude
+- [ ] **Open in Claude** → opens claude
+
+Now set the agent to **OpenAI Codex** and repeat:
+
+- [ ] **Open in Claude** → still opens **claude**
+- [ ] **Open in Codex** → opens codex
+
+Set it back to **Claude Code**.
+
+> If you only have one CLI installed, the entry for the missing one should show a clear
+> message box naming it and giving the `npm i -g ...` command — not fail silently. Please
+> confirm that.
+
+### 3. Folder names that break things — **these are regression checks**
+
+These two cases have each caused a real bug in this project.
+
+**A drive root.** Open `C:\` in Explorer and right-click the **empty background inside
+the window** — not the drive icon in *This PC*. The entries are registered for folders
+(`Directory` and `Directory\Background`), not for drives, so the drive icon deliberately
+shows nothing. The background of an open drive window is a `Directory\Background`
+right-click whose `%V` is `C:\`, which is the case we need to exercise.
+
+- [ ] **Open in Codex** opens a window whose prompt is at `C:\` — *not* at your user folder
+- [ ] and it really is **codex**, not claude
+
+> Why this matters: `%V` becomes `C:\`, and that trailing backslash escapes the closing
+> quote on the command line. Until recently the pinned agent was appended *after* the
+> folder, and Windows' parser swallowed it into the path — so this exact click silently
+> lost the pin **and** landed in the wrong folder. The fix was to put `-Agent` first.
+
+**A non-ASCII name.** Create a folder with Hebrew (or Japanese, or accented) characters:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\steroids-scratch\אתר שאולי" | Out-Null
+```
+
+- [ ] **Open Coding Agent Here** on it opens a window **in that folder**, with the name intact on the prompt
+
+> Why this matters: the macOS side had exactly this bug. Its shell escaped one byte out of
+> the middle of each Hebrew character, and `~/Desktop/אתר` reached the terminal as
+> `~/Desktop/◊$'\220'◊™◊®` — `cd` failed on a folder sitting right there. Windows should be
+> immune (PowerShell is UTF-16 end to end, never raw bytes), and Part 1 asserts that
+> against Windows' own parser. This confirms it for real.
+
+### 4. The grid
+
+On your scratch folder:
+
+- [ ] **Steroids Mode (9x Grid)** opens **one maximized window with nine panes**
+- [ ] Every pane is in the right folder
+- [ ] Set Grid to `2 x 2` in Settings, click it again → **four** panes
+
+### 5. Arrange and close
+
+Open three or four Terminal windows, then:
+
+- [ ] **Ctrl+Alt+T** tiles them into a grid over the work area, taskbar excluded
+- [ ] Minimized windows and windows on other virtual desktops are left alone
+- [ ] Tray → **Quit** → **Close Terminals on This Desktop** closes them **with no "close all panes?" confirmation dialog**
+- [ ] Tray → **Quit** → **Close ALL Agent Sessions** ends agent sessions on any desktop and leaves other terminals alone
+
+> "Close ALL Agent Sessions" is agent-blind on purpose: it ends Claude *and* Codex panes,
+> so a swarm you started under one agent is still yours to close after switching.
+
+---
+
+## Part 5 — Uninstall
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\uninstall.ps1
+```
+
+- [ ] Prints what it removed, then `Uninstalled.` in green
+- [ ] The tray icon disappears
+- [ ] All six context-menu entries are gone
+- [ ] Running it a second time prints `Nothing to uninstall` and does not error
+
+Verify nothing is left:
+
+```powershell
+Test-Path "$env:LOCALAPPDATA\claude-code-steroids"
+Test-Path "$env:APPDATA\claude-code-steroids"
+Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name ClaudeSteroidsTray -ErrorAction SilentlyContinue
+```
+
+- [ ] All three come back empty / `False`
+
+Then reinstall if you want to keep using it, and clean up:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\install.ps1
+Remove-Item -Recurse -Force "$env:USERPROFILE\steroids-scratch"
+```
+
+---
+
+## Reporting back
+
+Copy this, fill it in, send it:
+
+```
+ENVIRONMENT
+  Windows version   :  (winver)
+  PowerShell        :  ($PSVersionTable.PSVersion)
+  Windows Terminal  :
+  Agents installed  :  claude / codex / both
+  Display scaling   :  (100% / 125% / 150% ...)
+  Multiple monitors :  yes / no
+
+PART 1  offline suite      :  PASS (N tests)  /  FAIL
+PART 2  live suite         :  PASS (N tests)  /  FAIL  /  skipped
+PART 3  tray + settings    :  PASS / FAIL
+PART 4  context menu       :  PASS / FAIL
+PART 5  uninstall          :  PASS / FAIL
+
+FAILURES  (exact text, one block each)
+
+
+ANYTHING THAT FELT WRONG
+  (slow, ugly, confusing, in the wrong place — say so even if nothing errored)
+```
+
+Gather the environment lines in one go:
+
+```powershell
+"Windows : " + (Get-CimInstance Win32_OperatingSystem).Caption + " " + [Environment]::OSVersion.Version
+"PS      : " + $PSVersionTable.PSVersion
+"wt      : " + (Get-Command wt.exe -ErrorAction SilentlyContinue).Source
+Get-Command claude, codex -ErrorAction SilentlyContinue | Select-Object Name, Source
+```
+
+---
+
+## Known and expected
+
+Not bugs — no need to report these:
+
+- **Windows 11 hides the entries under "Show more options."** Getting into the top-level
+  menu needs a signed packaged shell extension, which this project deliberately is not.
+- **Six flat entries, not a nested submenu.** A cascading flyout would be nicer; it was
+  not written because a mistake in that mechanism produces a menu that opens and does
+  nothing, and nobody could test it. Worth doing once someone can.
+- **No "Locate…" button in Settings**, unlike macOS. On Windows an npm global install puts
+  the binary on `PATH`, and a hand-typed path would have to survive `cmd`'s
+  quote-stripping rules to reach the pane intact. Fixing `PATH` is the Windows answer.
+- **A hotkey may be dead** if another app claimed the combination first. The tray app says
+  so with a balloon tip at startup.
+- **The Steroids grid is panes in one window** on Windows, not nine separate windows as on
+  macOS. That is Windows Terminal's model.
+
+---
+
+## Troubleshooting
+
+**"running scripts is disabled on this system"** — you dropped the `-ExecutionPolicy
+Bypass`. Put it back; it applies to that one process and changes nothing permanently.
+
+**Context-menu entries don't appear** — restart Explorer:
+
+```powershell
+Stop-Process -Name explorer -Force
+```
+
+It relaunches itself. Check the registry directly:
+
+```powershell
+Get-ChildItem 'HKCU:\Software\Classes\Directory\shell' | Select-Object PSChildName
+(Get-ItemProperty 'HKCU:\Software\Classes\Directory\shell\OpenInCodex\command').'(default)'
+```
+
+**Tray icon missing** — check whether it is running and whether it compiled:
+
+```powershell
+Get-Process steroids-tray -ErrorAction SilentlyContinue
+Test-Path "$env:LOCALAPPDATA\claude-code-steroids\steroids-tray.exe"
+```
+
+Windows also hides tray icons by default: check the `^` overflow area, and
+**Settings → Personalization → Taskbar → Other system tray icons**.
+
+**A script does nothing when clicked** — they run hidden, so run one by hand to see the
+error:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\claude-code-steroids\open-in-claude.ps1" "$env:USERPROFILE\steroids-scratch"
+```
+
+Or ask it what it *would* do, without launching anything:
+
+```powershell
+& "$env:LOCALAPPDATA\claude-code-steroids\steroids-grid.ps1" -Dir "C:\Temp" -Agent codex -DryRun
+```
+
+That prints the exact `wt.exe` command line — very useful in a bug report.
+
+**Settings window won't open** — run it in the foreground so its error is visible:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\claude-code-steroids\steroids-settings.ps1"
+```
+
+**Anything else** — send the command you ran and the complete output. Do not clean it up.

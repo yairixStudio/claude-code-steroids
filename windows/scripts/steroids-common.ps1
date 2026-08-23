@@ -2,6 +2,114 @@
 # Shared helpers, dot-sourced by the other scripts. Kept deliberately small so
 # every script still reads on its own.
 
+# ---------------------------------------------------------------- settings --
+
+# One small JSON file drives every entry point -- the tray app, its global
+# hotkeys, and the Explorer right-click items -- so switching agent in Settings
+# changes all of them at once:
+#
+#   %APPDATA%\claude-code-steroids\config.json
+#   { "version": 1, "agent": "claude", "yolo": true, "columns": 3, "rows": 3 }
+#
+# It lives under APPDATA rather than beside the scripts in LOCALAPPDATA so that
+# reinstalling, which clears the script folder, never resets what you chose.
+#
+# (macOS understands one more key, "paths", for pointing at a CLI that is not on
+# PATH. Windows has no equivalent control: an npm global install puts the binary
+# on PATH, and a hand-typed path would have to survive cmd's quote-stripping
+# rules to reach the pane intact. Fixing PATH is the Windows answer.)
+# STEROIDS_CONFIG points the whole stack at another file -- what the test
+# suite uses so a run never reads, and never rewrites, your real settings.
+# macOS honours the same variable.
+$script:SteroidsConfigPath = if ($env:STEROIDS_CONFIG) {
+    $env:STEROIDS_CONFIG
+} else {
+    Join-Path $env:APPDATA 'claude-code-steroids\config.json'
+}
+
+# Adding an agent is one entry here plus one radio button in
+# steroids-settings.ps1. YoloFlag is per-agent because every CLI spells "stop
+# asking me" differently; with the toggle off we pass no flag at all, so each
+# CLI behaves exactly as it does when you run it yourself.
+$script:SteroidsAgents = @(
+    [pscustomobject]@{
+        Id = 'claude'; Label = 'Claude Code'; Bin = 'claude'
+        YoloFlag = '--dangerously-skip-permissions'
+        InstallHint = 'npm i -g @anthropic-ai/claude-code'
+    },
+    [pscustomobject]@{
+        Id = 'codex'; Label = 'OpenAI Codex'; Bin = 'codex'
+        YoloFlag = '--dangerously-bypass-approvals-and-sandbox'
+        InstallHint = 'npm i -g @openai/codex'
+    }
+)
+
+function Get-SteroidsAgent {
+    param([string]$Id)
+
+    $match = $script:SteroidsAgents | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
+    if ($match) { return $match }
+    return $script:SteroidsAgents[0]
+}
+
+# Deliberately forgiving: every field is optional and out-of-range values are
+# clamped, because a config someone hand-edited into nonsense must never be the
+# reason a hotkey stops opening a session. macOS applies the same defaults and
+# the same clamps.
+function Get-SteroidsConfig {
+    param([string]$Path = $script:SteroidsConfigPath)
+
+    $cfg = [pscustomobject]@{ Agent = 'claude'; Yolo = $true; Columns = 3; Rows = 3 }
+
+    $raw = $null
+    if (Test-Path -LiteralPath $Path) {
+        try { $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json }
+        catch { $raw = $null }
+    }
+    if ($null -eq $raw) { return $cfg }
+
+    if ($raw.PSObject.Properties['agent'] -and
+        ($script:SteroidsAgents | Where-Object { $_.Id -eq $raw.agent })) {
+        $cfg.Agent = [string]$raw.agent
+    }
+    if ($raw.PSObject.Properties['yolo'] -and $raw.yolo -is [bool]) { $cfg.Yolo = $raw.yolo }
+
+    $cfg.Columns = Read-SteroidsGridValue $raw 'columns' $cfg.Columns
+    $cfg.Rows    = Read-SteroidsGridValue $raw 'rows'    $cfg.Rows
+    return $cfg
+}
+
+# A grid dimension, or the default if the file does not have a usable one.
+# Anything outside 1..8 is discarded rather than clamped to the nearest edge:
+# "columns": 40 is a typo, and silently launching an 8-wide grid of agents is a
+# worse answer to a typo than ignoring it.
+function Read-SteroidsGridValue {
+    param([psobject]$Raw, [string]$Key, [int]$Default)
+
+    $prop = $Raw.PSObject.Properties[$Key]
+    if (-not $prop) { return $Default }
+    $n = 0
+    if (-not [int]::TryParse([string]$prop.Value, [ref]$n)) { return $Default }
+    if ($n -lt 1 -or $n -gt 8) { return $Default }
+    return $n
+}
+
+function Save-SteroidsConfig {
+    param([psobject]$Config, [string]$Path = $script:SteroidsConfigPath)
+
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    [pscustomobject]@{
+        version = 1
+        agent   = $Config.Agent
+        columns = $Config.Columns
+        rows    = $Config.Rows
+        yolo    = [bool]$Config.Yolo
+    } | ConvertTo-Json | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
 # ---------------------------------------------------------------- paths & UI --
 
 # Explorer hands the clicked folder to the context-menu command as "%V". When
@@ -44,18 +152,30 @@ function Test-WindowsTerminal {
     return [bool](Get-Command wt.exe -ErrorAction SilentlyContinue)
 }
 
-function Test-ClaudeCli {
-    return [bool](Get-Command claude -ErrorAction SilentlyContinue)
+function Test-AgentCli {
+    param([psobject]$Agent)
+
+    return [bool](Get-Command $Agent.Bin -ErrorAction SilentlyContinue)
 }
 
-# Every pane runs Claude inside cmd /k so the pane survives Claude exiting and
-# leaves you a shell to work in.
+# Every pane runs the agent inside cmd /k so the pane survives the agent exiting
+# and leaves you a shell to work in.
 #
-# NOTE: --dangerously-skip-permissions ("YOLO mode") lets Claude read, edit and
-# run commands without asking. Only point this at folders you trust. Remove the
-# flag here to get the normal prompt-on-each-action behaviour.
-function Get-ClaudePaneCommand {
-    return @('cmd', '/k', 'claude --dangerously-skip-permissions')
+# The whole thing is ONE argument on purpose. wt hands it to cmd as the tail of
+# /k, and cmd strips the outer quotes off a tail that both starts and ends with
+# one -- which is exactly what turns "claude --flag" back into two tokens. Split
+# across several arguments it would arrive quoted and cmd would look for a
+# program literally named "claude --flag".
+#
+# NOTE: the YOLO flag ("skip approval prompts" in Settings) lets the agent read,
+# edit and run commands without asking. Only point it at folders you trust.
+function Get-AgentPaneCommand {
+    param([psobject]$Config = (Get-SteroidsConfig))
+
+    $agent = Get-SteroidsAgent $Config.Agent
+    $line = $agent.Bin
+    if ($Config.Yolo) { $line += ' ' + $agent.YoloFlag }
+    return @('cmd', '/k', $line)
 }
 
 # ------------------------------------------------------------ command lines --
@@ -377,34 +497,45 @@ function Get-DescendantProcess {
     return $out
 }
 
-# Claude reaches a pane by more than one shape. The native installer leaves a
-# claude.exe in the tree, but an npm install runs the CLI as plain node.exe with
-# the package path on its command line -- and matching node by name would put
-# every unrelated Node process on the machine in the firing line. So match a
-# claude command token, or the CLI package in a path, and nothing broader.
-$script:ClaudeCommandPatterns = @(
+# An agent reaches a pane by more than one shape. The native installer leaves a
+# claude.exe / codex.exe in the tree, but an npm install runs the CLI as plain
+# node.exe with the package path on its command line -- and matching node by
+# name would put every unrelated Node process on the machine in the firing line.
+# So match an agent command token, or the CLI package in a path, and nothing
+# broader.
+#
+# Note how much narrower the codex package pattern is than the claude one: a
+# folder called "claude-code" is a package, while a folder called "codex" is
+# something half the world has in a projects directory. Requiring the @openai
+# scope is what keeps a sweep off an unrelated pane.
+$script:AgentCommandPatterns = @(
     '(?:^|[\s"])(?:[^\s"]*[\\/])?claude(?:\.(?:exe|cmd|bat|ps1))?(?=$|[\s"])',
-    '[\\/](?:@anthropic-ai[\\/])?claude-code[\\/]'
+    '[\\/](?:@anthropic-ai[\\/])?claude-code[\\/]',
+    '(?:^|[\s"])(?:[^\s"]*[\\/])?codex(?:\.(?:exe|cmd|bat|ps1))?(?=$|[\s"])',
+    '[\\/]@openai[\\/]codex[\\/]'
 )
 
-function Test-ClaudeProcess {
+function Test-AgentProcess {
     param([psobject]$Process)
 
-    if ($Process.Name -like 'claude*') { return $true }
+    if ($Process.Name -like 'claude*' -or $Process.Name -like 'codex*') { return $true }
     $cmd = $Process.CommandLine
     if ([string]::IsNullOrEmpty($cmd)) { return $false }
-    foreach ($pattern in $script:ClaudeCommandPatterns) {
+    foreach ($pattern in $script:AgentCommandPatterns) {
         if ($cmd -match $pattern) { return $true }
     }
     return $false
 }
 
-function Test-ShellRunsClaude {
+# Deliberately not scoped to the agent currently selected in Settings: a swarm
+# you started this morning under Claude is still yours to close this afternoon
+# after switching to Codex.
+function Test-ShellRunsAgent {
     param([psobject]$Shell)
 
-    if (Test-ClaudeProcess $Shell) { return $true }
+    if (Test-AgentProcess $Shell) { return $true }
     foreach ($d in $Shell.Descendants) {
-        if (Test-ClaudeProcess $d) { return $true }
+        if (Test-AgentProcess $d) { return $true }
     }
     return $false
 }

@@ -1,18 +1,24 @@
 ﻿# Claude Code — Steroids Mode (Windows)
-# Opens 9 Claude Code sessions in a single, maximized Windows Terminal window,
-# arranged as a 3x3 grid of panes. Each pane runs:
-#   claude --dangerously-skip-permissions
+# Opens a grid of agent sessions — Claude Code or OpenAI Codex, whichever is
+# selected in Settings — as panes in a single, maximized Windows Terminal
+# window. 3x3 by default; Settings can make it anything from 1x1 to 8x8.
 #
-# Usage: steroids-grid.ps1 "<folder>" [-Columns 3] [-Rows 3]
-#        (folder defaults to the user profile folder)
-#
-# Want a 2x2 or 4x4 swarm instead? Pass -Columns/-Rows — the split maths below
-# is general, nothing is hard-coded to nine.
+# Usage: steroids-grid.ps1 "<folder>" [-Agent claude|codex] [-Columns 3] [-Rows 3]
+#        (folder defaults to the user profile folder; -Columns/-Rows override
+#         the configured grid for one run without changing the setting)
 
 param(
     [string]$Dir = $env:USERPROFILE,
-    [ValidateRange(1, 8)][int]$Columns = 3,
-    [ValidateRange(1, 8)][int]$Rows = 3,
+
+    # Pin one agent for this run, whatever Settings says -- what the
+    # per-agent context-menu entries pass. Empty means "follow Settings".
+    [ValidateSet('', 'claude', 'codex')]
+    [string]$Agent = '',
+
+    # 0 means "whatever Settings says" -- PowerShell evaluates default values
+    # before the script body, so the config cannot be read here.
+    [ValidateRange(0, 8)][int]$Columns = 0,
+    [ValidateRange(0, 8)][int]$Rows = 0,
 
     # Return the Windows Terminal command line instead of launching it — handy
     # for checking a custom grid before nine agents land on your machine.
@@ -27,12 +33,18 @@ if (-not (Test-WindowsTerminal)) {
     Show-SteroidsError "Windows Terminal (wt.exe) was not found.`n`nInstall it from the Microsoft Store: https://aka.ms/terminal"
     exit 1
 }
-if (-not (Test-ClaudeCli)) {
-    Show-SteroidsError "The Claude Code CLI was not found on your PATH.`n`nInstall it from https://claude.com/claude-code and reopen Explorer so it picks up the new PATH."
+$config = Get-SteroidsConfig
+if ($Agent) { $config.Agent = $Agent }
+if ($Columns -eq 0) { $Columns = $config.Columns }
+if ($Rows -eq 0)    { $Rows = $config.Rows }
+
+$agent = Get-SteroidsAgent $config.Agent
+if (-not (Test-AgentCli $agent)) {
+    Show-SteroidsError "$($agent.Label) was not found on your PATH.`n`nInstall it with:`n    $($agent.InstallHint)`n`nThen reopen Explorer so it picks up the new PATH, or pick the other agent in the tray menu's Settings."
     exit 1
 }
 
-$run = Get-ClaudePaneCommand
+$run = Get-AgentPaneCommand $config
 $wt = New-Object System.Collections.Generic.List[string]
 
 # wt's --size is a fraction of the pane being split, and it always parses with a

@@ -5,7 +5,10 @@
 #
 # Usage: close-terminals.sh <mode> [--dry-run]
 #   space   close ALL Terminal windows on the CURRENT desktop (Space) only
-#   claude  close ALL Terminal windows (every Space) that are running Claude
+#   agents  close ALL Terminal windows (every Space) running a coding agent —
+#           Claude Code or OpenAI Codex, whichever the window happens to hold,
+#           so a mixed desktop tears down in one go. ("claude" is the old name
+#           for this mode and still works.)
 #
 # Current-Space detection: same CGWindowList bounds-matching trick as
 # arrange-terminals.sh — needs no Accessibility/Screen Recording permission.
@@ -58,14 +61,17 @@ if (mode === "space") {
     } catch (e) {}
   });
 } else {
-  // Every window (any Space) with a tab whose process list includes "claude".
+  // Every window (any Space) with a tab running one of the agents. Matching
+  // exact process names, not a substring: a window that merely has "codex" in
+  // its title, or an editor with the word in a file path, is not a session.
+  const AGENTS = ["claude", "codex"];
   term.windows().forEach(w => {
     try {
-      const hasClaude = w.tabs().some(t => {
-        try { return t.processes().some(p => String(p) === "claude"); }
+      const hasAgent = w.tabs().some(t => {
+        try { return t.processes().some(p => AGENTS.indexOf(String(p)) !== -1); }
         catch (e) { return false; }
       });
-      if (hasClaude) targets.push({ id: w.id(), ttys: ttysOf(w) });
+      if (hasAgent) targets.push({ id: w.id(), ttys: ttysOf(w) });
     } catch (e) {}
   });
 }

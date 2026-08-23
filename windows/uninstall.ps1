@@ -9,7 +9,11 @@ param()
 $removed = @()
 
 foreach ($root in @('Directory', 'Directory\Background')) {
-    foreach ($key in @('OpenInClaude', 'ClaudeSteroids')) {
+    # Every key this project has ever registered, the pre-2.1 pair included --
+    # a leftover entry keeps answering right-clicks long after its script is gone.
+    foreach ($key in @('OpenAgentHere', 'AgentSteroids',
+                       'OpenInClaude', 'ClaudeSteroids',
+                       'OpenInCodex', 'CodexSteroids')) {
         $path = "HKCU:\Software\Classes\$root\shell\$key"
         if (Test-Path $path) {
             Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
@@ -33,6 +37,12 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 if ((Get-ItemProperty -Path $runKey -Name 'ClaudeSteroidsTray' -ErrorAction SilentlyContinue)) {
     Remove-ItemProperty -Path $runKey -Name 'ClaudeSteroidsTray' -ErrorAction SilentlyContinue
     $removed += 'login entry'
+}
+
+$configDir = Join-Path $env:APPDATA 'claude-code-steroids'
+if (Test-Path $configDir) {
+    Remove-Item -Path $configDir -Recurse -Force -ErrorAction SilentlyContinue
+    $removed += "settings: $configDir"
 }
 
 $dest = Join-Path $env:LOCALAPPDATA 'claude-code-steroids'
