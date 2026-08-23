@@ -789,10 +789,20 @@ if ($IncludeLive) {
         if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
         Assert-True (Test-Path $csc) 'csc.exe not found'
         $exe = Join-Path $env:TEMP 'steroids-tray-test.exe'
-        $out = & $csc /nologo /target:winexe /out:"$exe" /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-                  (Join-Path $scriptsDir 'steroids-tray.cs') 2>&1
+        # 2>&1 under $ErrorActionPreference = 'Stop' turns a single stderr line
+        # into a terminating error, which would surface as this test failing
+        # with csc's first line of noise instead of its compiler output. Same
+        # guard as install.ps1 uses around the same call.
+        $out = $null
+        $code = 0
         try {
-            Assert-Equal 0 $LASTEXITCODE ("csc exited $LASTEXITCODE`n" + ($out -join "`n"))
+            $ErrorActionPreference = 'Continue'
+            $out = & $csc /nologo /target:winexe /out:"$exe" /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+                      (Join-Path $scriptsDir 'steroids-tray.cs') 2>&1
+            $code = $LASTEXITCODE
+        } finally { $ErrorActionPreference = 'Stop' }
+        try {
+            Assert-Equal 0 $code ("csc exited $code`n" + ($out -join "`n"))
             Assert-True (Test-Path $exe) 'no exe produced'
         } finally { Remove-Item $exe -Force -ErrorAction SilentlyContinue }
     }

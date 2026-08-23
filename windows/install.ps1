@@ -106,13 +106,30 @@ if (-not $NoTray) {
         Start-Sleep -Milliseconds 400
 
         $exe = Join-Path $dest 'steroids-tray.exe'
-        $out = & $csc /nologo /target:winexe /out:"$exe" `
-                 /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-                 (Join-Path $scriptSource 'steroids-tray.cs') 2>&1
+
+        # 2>&1 on a native command turns every stderr line into an ErrorRecord,
+        # and this script runs under $ErrorActionPreference = 'Stop' -- so one
+        # line on csc's stderr would abort the installer here, after the context
+        # menu is registered but before anything is reported, and the graceful
+        # "continuing without it" branch below could never run. csc happens to
+        # put its diagnostics on stdout, which is the only reason this has not
+        # bitten yet. Drop the preference for the length of the call rather than
+        # relying on that.
+        $out = $null
+        $code = 0
+        try {
+            $ErrorActionPreference = 'Continue'
+            $out = & $csc /nologo /target:winexe /out:"$exe" `
+                     /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+                     (Join-Path $scriptSource 'steroids-tray.cs') 2>&1
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = 'Stop'
+        }
 
         # csc reports failures through its exit code; without this check a
         # broken build would still be registered to run at every login.
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) {
+        if ($code -ne 0 -or -not (Test-Path $exe)) {
             Write-Host 'Tray app failed to compile - continuing without it.' -ForegroundColor Yellow
             $out | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
         } else {
