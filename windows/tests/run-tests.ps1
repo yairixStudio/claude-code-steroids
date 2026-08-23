@@ -108,7 +108,7 @@ Section 'Parameter shadowing — the bug that broke every single launch'
 # -Agent parameter are one variable. Assigning the agent *object* to it re-ran
 # the parameter's [ValidateSet], which threw; $agent stayed the string it was,
 # $agent.Bin came back $null, and every launch died with "was not found on your
-# PATH" on machines where the CLI was sitting right there on it.
+# PATH" on machines where the CLI was sitting right there on the PATH.
 #
 # The shape is what makes it worth a static check: it is invisible on the line
 # that causes it, it fails at run time and never at parse time, and any
@@ -314,7 +314,7 @@ function Get-PaneCommandFrom {
 
     $a = if ($AgentId) { @(& $Script -Dir $env:USERPROFILE -Agent $AgentId -DryRun 3>$null) }
          else          { @(& $Script -Dir $env:USERPROFILE -DryRun 3>$null) }
-    # The pane command is the last argument of every launch.
+    # The pane command is the last argument of every launch: cmd, /k, the line.
     return [string]$a[-1]
 }
 
@@ -322,6 +322,10 @@ foreach ($launcher in @(@('open-in-claude.ps1', $openScript), @('steroids-grid.p
     foreach ($pinned in @(@('claude', 'codex'), @('codex', 'claude'))) {
 
         Test-Case "$($launcher[0]) -Agent $($pinned[0]) launches $($pinned[0])" {
+            # Asserting on which agent appears rather than on an exact string:
+            # Resolve-AgentCommand substitutes a full path when the CLI is
+            # installed somewhere our PATH does not mention, and the property
+            # that matters is that the pin picked the right agent either way.
             $pane = Get-PaneCommandFrom -Script $launcher[1] -AgentId $pinned[0]
             Assert-True ($pane -match $pinned[0]) "the pinned agent is missing from: $pane"
             Assert-True ($pane -notmatch $pinned[1]) "the other agent leaked in: $pane"
@@ -375,22 +379,47 @@ Test-Case 'the persisted PATH is readable and looks like a PATH' {
         'an environment variable was left unexpanded'
 }
 
+Test-Case 'a full path is called, not merely named' {
+    # A quoted path on a PowerShell line is a string expression: without the call
+    # operator the pane would print the path and sit there. The quoting rule is
+    # PowerShell's own -- single quotes, doubled to escape one.
+    Assert-Equal "& 'C:\Users\me\.local\bin\claude.exe'" `
+        (ConvertTo-PowerShellCommand 'C:\Users\me\.local\bin\claude.exe') 'plain path'
+    Assert-Equal "& 'C:\Program Files\nodejs\claude.cmd'" `
+        (ConvertTo-PowerShellCommand 'C:\Program Files\nodejs\claude.cmd') 'path with spaces'
+    Assert-Equal "& 'C:\it''s here\codex.cmd'" `
+        (ConvertTo-PowerShellCommand "C:\it's here\codex.cmd") 'path containing a quote'
+}
+
 Test-Case 'a full path reaches the pane as one argument, spaces or not' {
-    # What Get-AgentPaneCommand -Executable produces has to survive the same
-    # trip every other argument does, and arrive as a single token.
+    # What Get-AgentPaneCommand -Executable produces has to survive the same trip
+    # every other argument does and arrive as a single token, or -Command would
+    # receive the flag as a separate argument and the path on its own.
     Initialize-SteroidsInterop
     foreach ($exe in @('C:\Users\me\.local\bin\claude.exe',
                        'C:\Program Files\nodejs\claude.cmd',
                        'C:\Users\me\AppData\Roaming\npm\codex.cmd')) {
-        $quoted = Format-CommandLineArgument $exe
-        $pane = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $true }) -Executable $quoted
-        Assert-Equal "$quoted --dangerously-skip-permissions" $pane[-1] 'line shape'
+        $call = ConvertTo-PowerShellCommand $exe
+        $pane = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $true }) -Executable $call
+        Assert-Equal 5 $pane.Count 'the pane command must stay host, flags, one line'
+        Assert-Equal "$call --dangerously-skip-permissions" $pane[-1] 'line shape'
 
         # argv[0] is parsed by the special program-name rules, so lead with a dummy.
         $line = 'prog.exe ' + (ConvertTo-WtCommandLine (@('new-tab', '-d', 'C:\work') + $pane))
         $got = @([SteroidsWin]::ParseCommandLine($line) | Select-Object -Skip 1)
-        Assert-Equal "$quoted --dangerously-skip-permissions" $got[-1] "mangled in transit: $exe"
+        Assert-Equal "$call --dangerously-skip-permissions" $got[-1] "mangled in transit: $exe"
     }
+}
+
+Test-Case 'window shaping leaves alone anything it did not open' {
+    # One Windows Terminal process owns every window, so the new one is found by
+    # elimination. If elimination is inconclusive the answer must be to do
+    # nothing -- moving somebody else's window is much worse than leaving ours
+    # at Terminal's default size.
+    Initialize-SteroidsInterop
+    $all = @([SteroidsWin]::Find('WindowsTerminal', $false))
+    Assert-True (-not (Set-NewTerminalWindowShape -Before $all -TimeoutSeconds 1)) `
+        'claimed to have shaped a window when nothing new had appeared'
 }
 
 Test-Case 'no -Executable means nothing about the launch changed' {
@@ -942,11 +971,16 @@ if ($IncludeLive) {
     Test-Case 'a nine-pane grid really opens, and really is nine panes' {
         Stop-Probes
         $a = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
-        # Swap the Claude command for the probe, keeping the layout identical.
+        # Swap the agent command for the probe, keeping the layout identical.
+        # Matched against whatever Get-AgentPaneCommand currently emits rather
+        # than against a hardcoded 'cmd', '/k' -- the pane host has changed once
+        # already and this loop silently substituted nothing when it did.
+        $paneBlock = @(Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $true }))
         $live = @(); $i = 0
         while ($i -lt $a.Count) {
-            if ($a[$i] -eq 'cmd' -and $a[$i + 1] -eq '/k') { $live += $probe; $i += 3 }
-            else { $live += $a[$i]; $i++ }
+            if ($a[$i] -eq $paneBlock[0] -and $a[$i + 1] -eq $paneBlock[1]) {
+                $live += $probe; $i += $paneBlock.Count
+            } else { $live += $a[$i]; $i++ }
         }
         Assert-Equal 9 (@($live | Where-Object { $_ -like "prompt $marker*" }).Count) 'probe substitution'
 
@@ -959,27 +993,40 @@ if ($IncludeLive) {
     Test-Case 'a pane really opens in a folder whose name needs quoting' {
         # The end-to-end version of the quoting tests: before the fix, wt read
         # "C:\...\steroids test dir" as three arguments and the pane opened in
-        # whatever "...\steroids" resolved to. The pane reports its own working
-        # directory, so this checks where it actually landed rather than what we
-        # asked for.
-        $cwdFile = Join-Path $env:TEMP 'steroids-cwd.txt'
+        # whatever "...\steroids" resolved to.
+        #
+        # The pane proves where it landed by dropping a file in its own working
+        # directory, under a RELATIVE name, rather than by printing the path:
+        # `cd` writes through cmd's OEM code page, so a Hebrew or Japanese folder
+        # name would come back mojibake and fail a comparison that has nothing to
+        # do with the bug under test. A file either appears in the right folder
+        # or it does not, whatever the folder is called.
+        $cwdMarker = 'steroids-cwd-marker.txt'
+        $strayMarker = Join-Path $env:USERPROFILE $cwdMarker
 
-        foreach ($name in @('steroids test dir', 'steroids;semi dir', 'steroids (100%) dir')) {
+        # The last two are the macOS regression, ported. There, zsh escaped one
+        # byte out of the middle of each Hebrew character and `cd` failed on a
+        # folder sitting right in front of you. PowerShell is UTF-16 end to end
+        # and should be immune -- worth holding to rather than assuming.
+        foreach ($name in @('steroids test dir', 'steroids;semi dir', 'steroids (100%) dir',
+                            'steroids אתר שאולי', 'steroids 日本語のフォルダ')) {
             $probeDir = Join-Path $env:TEMP $name
             New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
-            Remove-Item $cwdFile -Force -ErrorAction SilentlyContinue
+            $landed = Join-Path $probeDir $cwdMarker
+            Remove-Item $landed, $strayMarker -Force -ErrorAction SilentlyContinue
             Stop-Probes
             try {
-                $paneCmd = 'prompt ' + $marker + '$ & cd > "' + $cwdFile + '"'
+                $paneCmd = 'prompt ' + $marker + '$ & echo ok> ' + $cwdMarker
                 Start-WindowsTerminal (@('-w', 'new', 'new-tab', '-d', $probeDir) + @('cmd', '/k', $paneCmd))
 
                 $deadline = (Get-Date).AddSeconds(25)
-                while ((Get-Date) -lt $deadline -and -not (Test-Path $cwdFile)) { Start-Sleep -Milliseconds 500 }
-                Assert-True (Test-Path $cwdFile) "the pane never started for '$name'"
-                Assert-Equal $probeDir ((Get-Content $cwdFile -Raw).Trim()) "pane opened in the wrong folder for '$name'"
+                while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $landed)) { Start-Sleep -Milliseconds 500 }
+                Assert-True (Test-Path -LiteralPath $landed) `
+                    ("the pane did not open in '$name'" +
+                     $(if (Test-Path -LiteralPath $strayMarker) { " - it opened in $env:USERPROFILE instead" } else { ' - or never started' }))
             } finally {
                 Stop-Probes
-                Remove-Item $cwdFile  -Force -ErrorAction SilentlyContinue
+                Remove-Item $strayMarker -Force -ErrorAction SilentlyContinue
                 Remove-Item $probeDir -Force -Recurse -ErrorAction SilentlyContinue
             }
         }
@@ -1188,17 +1235,20 @@ Test-Case 'each agent contributes its own flag, and only when YOLO is on' {
     $codexOn   = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'codex';  Yolo = $true })
     $codexOff  = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'codex';  Yolo = $false })
 
-    Assert-Equal 'claude --dangerously-skip-permissions' $claudeOn[2] 'claude YOLO'
-    Assert-Equal 'claude' $claudeOff[2] 'claude plain'
-    Assert-Equal 'codex --dangerously-bypass-approvals-and-sandbox' $codexOn[2] 'codex YOLO'
-    Assert-Equal 'codex' $codexOff[2] 'codex plain'
+    Assert-Equal 'claude --dangerously-skip-permissions' $claudeOn[-1] 'claude YOLO'
+    Assert-Equal 'claude' $claudeOff[-1] 'claude plain'
+    Assert-Equal 'codex --dangerously-bypass-approvals-and-sandbox' $codexOn[-1] 'codex YOLO'
+    Assert-Equal 'codex' $codexOff[-1] 'codex plain'
 
-    # cmd /k with the command as ONE argument is what makes wt's quoting land as
-    # two tokens rather than a program named "claude --flag".
+    # PowerShell hosts the pane. -NoExit is what keeps it alive once the agent
+    # ends, and the command staying ONE argument is what lets Settings show the
+    # line that will actually run.
     foreach ($c in @($claudeOn, $codexOff)) {
-        Assert-Equal 'cmd' $c[0] 'host'
-        Assert-Equal '/k'  $c[1] 'switch'
-        Assert-Equal 3 $c.Count 'argument count'
+        Assert-Equal 'powershell' $c[0] 'pane host'
+        Assert-True ($c -contains '-NoExit') 'without -NoExit the pane dies with the agent'
+        Assert-True ($c -contains '-NoLogo') 'the banner would eat the top of a grid pane'
+        Assert-Equal '-Command' $c[-2] 'the agent line must be what -Command receives'
+        Assert-Equal 5 $c.Count 'argument count'
     }
 }
 

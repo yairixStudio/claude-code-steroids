@@ -202,13 +202,24 @@ function Get-PersistedPathDirectory {
 #   .OnPath  Get-Command saw it, so the pane command stays the bare name it has
 #            always been and nothing about the launch changes
 #   .Path    the executable we found, when we had to look past our own PATH
-#   .Launch  what goes on the pane's command line -- the bare name, or the full
-#            path quoted
+#   .Launch  what goes on the `cmd /k` line -- the bare name, or the full path
+#            quoted (see Get-AgentPaneCommand for why the quoting survives)
 #
 # The fallback search exists because "was not found on your PATH" was, in
 # practice, almost never true: the CLI was installed, just not in the stale
 # environment Explorer handed the script. Telling someone to reinstall software
 # they already have is the worst possible answer, so find it instead.
+# A path that lands on a PowerShell command line has to be *called*, not merely
+# named: 'C:\...\claude.exe' on its own is a string expression, and PowerShell
+# would print it rather than run it. The call operator fixes that, and single
+# quotes stop anything in the path being read as syntax -- with the doubling
+# rule PowerShell uses for a quote inside a quoted string.
+function ConvertTo-PowerShellCommand {
+    param([string]$Path)
+
+    return "& '" + $Path.Replace("'", "''") + "'"
+}
+
 function Resolve-AgentCommand {
     param([psobject]$Agent)
 
@@ -220,8 +231,8 @@ function Resolve-AgentCommand {
         }
     }
 
-    # Only the extensions cmd.exe and PowerShell will actually execute. A bare,
-    # extensionless shim (npm writes one for Git Bash) is not one of them.
+    # Only the extensions cmd.exe will actually execute from a `/k` line. A
+    # bare, extensionless shim (npm writes one for Git Bash) is not one of them.
     $searched = @()
     foreach ($dir in (@(Get-PersistedPathDirectory) + $script:SteroidsAgentHomes)) {
         if ($searched -contains $dir) { continue }
@@ -231,7 +242,7 @@ function Resolve-AgentCommand {
             if (Test-Path -LiteralPath $candidate -PathType Leaf) {
                 return [pscustomobject]@{
                     Found = $true; OnPath = $false
-                    Path = $candidate; Launch = Format-CommandLineArgument $candidate
+                    Path = $candidate; Launch = ConvertTo-PowerShellCommand $candidate
                 }
             }
         }
@@ -269,35 +280,38 @@ function Get-AgentMissingMessage {
     ) -join "`n"
 }
 
-# Every pane runs the agent inside cmd /k so the pane survives the agent exiting
-# and leaves you a shell to work in.
+# Panes are hosted by PowerShell rather than cmd. It is the shell Windows leads
+# with now, it is the one whose quoting rules the rest of this project already
+# reasons about, and when the agent exits you are left at a prompt worth having
+# instead of at a bare drive letter.
 #
-# The whole thing is ONE argument on purpose. wt hands it to cmd as the tail of
-# /k, and cmd strips the outer quotes off a tail that both starts and ends with
-# one -- which is exactly what turns "claude --flag" back into two tokens. Split
-# across several arguments it would arrive quoted and cmd would look for a
-# program literally named "claude --flag".
+#   -NoExit   keeps the pane alive after the agent ends -- cmd's /k, respelled
+#   -NoLogo   drops the startup banner, which otherwise eats the top of a pane
+#             that in a 3x3 grid is only sixteen lines tall to begin with
+#
+# The profile is deliberately NOT suppressed. This pane becomes your shell for
+# the rest of the session, so it should be your shell.
+#
+# The agent command stays ONE argument: -Command takes it as PowerShell source,
+# and keeping it whole is what lets Settings show you the exact line that will
+# run.
 #
 # NOTE: the YOLO flag ("skip approval prompts" in Settings) lets the agent read,
 # edit and run commands without asking. Only point it at folders you trust.
-#
+$script:SteroidsPaneHost = @('powershell', '-NoLogo', '-NoExit', '-Command')
+
 # -Executable overrides the bare name with what Resolve-AgentCommand found, and
 # is passed only when the CLI was not on our PATH -- so the ordinary launch is
 # byte for byte what it always was, and a path appears only in the case that
-# used to fail outright.
-#
-# A quoted full path survives cmd's /k rules both ways round, which is what
-# makes this safe. cmd keeps the quotes when there is whitespace between them
-# and the text inside names an executable ("C:\Program Files\...\claude.exe"
-# --flag), and strips them when there is not ("C:\Users\me\.local\bin\claude.exe"
-# --flag -> unquoted, and it has no spaces to lose).
+# used to fail outright. It arrives already in call-operator form, because a
+# quoted path sitting on a PowerShell line is a string until something calls it.
 function Get-AgentPaneCommand {
     param([psobject]$Config = (Get-SteroidsConfig), [string]$Executable)
 
     $agent = Get-SteroidsAgent $Config.Agent
     $line = if ($Executable) { $Executable } else { $agent.Bin }
     if ($Config.Yolo) { $line += ' ' + $agent.YoloFlag }
-    return @('cmd', '/k', $line)
+    return $script:SteroidsPaneHost + @($line)
 }
 
 # ------------------------------------------------------------ command lines --
@@ -355,6 +369,52 @@ function Start-WindowsTerminal {
     param([string[]]$Arguments)
 
     Start-Process wt.exe -ArgumentList (ConvertTo-WtCommandLine $Arguments)
+}
+
+# A single session gets whatever size Windows Terminal's profile last used, put
+# wherever the OS decides -- which on a 1080p screen is a smallish box parked off
+# to one side. A window you are about to work in deserves a shape, so give it a
+# share of the work area and centre it. The grid does not need this: it asks wt
+# for -M and fills the screen.
+#
+# The window has to be found after the fact. One Windows Terminal process owns
+# every window, so Start-Process hands back the launcher, not anything on screen.
+# Snapshot first, take whatever is new -- and if that is not exactly one window
+# (nothing appeared, or several did because something else opened a terminal at
+# the same moment) leave every window alone rather than move one we did not open.
+function Set-NewTerminalWindowShape {
+    param(
+        [System.IntPtr[]]$Before = @(),
+        [double]$WidthFraction = 0.62,
+        [double]$HeightFraction = 0.80,
+        [int]$TimeoutSeconds = 8,
+        [string]$ProcessName = 'WindowsTerminal'
+    )
+
+    $known = @{}
+    foreach ($h in $Before) { $known[$h.ToInt64()] = $true }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $fresh = @()
+    do {
+        Start-Sleep -Milliseconds 200
+        $fresh = @([SteroidsWin]::Find($ProcessName, $false) |
+                     Where-Object { -not $known.ContainsKey($_.ToInt64()) })
+        if ($fresh.Count -gt 0) { break }
+    } while ((Get-Date) -lt $deadline)
+
+    if ($fresh.Count -ne 1) { return $false }
+
+    $area = [SteroidsWin]::WorkArea()
+    $areaW = $area.Right - $area.Left
+    $areaH = $area.Bottom - $area.Top
+    $w = [int]($areaW * $WidthFraction)
+    $h = [int]($areaH * $HeightFraction)
+    [SteroidsWin]::Place($fresh[0],
+        ($area.Left + [int](($areaW - $w) / 2)),
+        ($area.Top  + [int](($areaH - $h) / 2)),
+        $w, $h)
+    return $true
 }
 
 # ------------------------------------------------------------------ interop --

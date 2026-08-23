@@ -30,8 +30,7 @@ param(
 $Dir = Resolve-TargetDir $Dir
 
 # -DryRun is "tell me what you would run", so it reports a problem and carries
-# on building the command line instead of stopping behind a modal dialog that
-# nothing unattended can dismiss.
+# on building the command line instead of stopping behind a modal dialog.
 if (-not (Test-WindowsTerminal)) {
     Show-SteroidsError "Windows Terminal (wt.exe) was not found.`n`nInstall it from the Microsoft Store: https://aka.ms/terminal" -Quiet:$DryRun
     if (-not $DryRun) { exit 1 }
