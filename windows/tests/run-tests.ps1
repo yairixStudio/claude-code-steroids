@@ -378,12 +378,17 @@ Test-Case 'a drive root keeps both its backslash and the pinned agent' {
     # The exact shape the registry entry produces, parsed by the same function
     # CreateProcess'd programs use. Before the pin moved ahead of the folder,
     # this came back as the single argument  C:" -Agent claude .
+    # Indices count the whole line: [0] the dummy program name, [1] -File and
+    # [2] its script, and only then the arguments the script itself receives.
+    # This test used to read from [1] and reported the launcher's own -File
+    # switch as a missing pin.
     $cmd = 'ps.exe -File "C:\s\g.ps1" -Agent claude "C:\"'
     $parsed = [SteroidsWin]::ParseCommandLine($cmd)
-    Assert-Equal '-Agent' $parsed[1] 'named parameter survives'
-    Assert-Equal 'claude' $parsed[2] 'its value survives'
-    Assert-Equal 'C:"'    $parsed[3] 'the drive root arrives in the form Resolve-TargetDir repairs'
-    Assert-Equal 'C:\'    (Resolve-TargetDir $parsed[3]) 'and is repaired'
+    Assert-Equal 6        $parsed.Count 'argument count'
+    Assert-Equal '-Agent' $parsed[3] 'named parameter survives'
+    Assert-Equal 'claude' $parsed[4] 'its value survives'
+    Assert-Equal 'C:"'    $parsed[5] 'the drive root arrives in the form Resolve-TargetDir repairs'
+    Assert-Equal 'C:\'    (Resolve-TargetDir $parsed[5]) 'and is repaired'
 }
 
 Test-Case 'non-ASCII folder names survive the trip to wt.exe' {
@@ -628,8 +633,15 @@ Section 'Installer / uninstaller round trip'
 $menuNames = @('OpenAgentHere', 'AgentSteroids',
                'OpenInClaude', 'ClaudeSteroids',
                'OpenInCodex', 'CodexSteroids')
-$menuKeys = foreach ($root in @('Directory', 'Directory\Background')) {
-    foreach ($n in $menuNames) { "HKCU:\Software\Classes\$root\shell\$n" }
+# $menuRoot, not $root: a foreach variable is an ordinary assignment, so looping
+# over $root here overwrote the repository path set at the top of the file and
+# left it as 'Directory\Background'. Every live test that ran a script by path
+# then invoked 'Directory\Background\install.ps1' -- which does not exist -- so
+# the installer and uninstaller silently never ran, and the tests that checked
+# their work either failed for an unrelated-looking reason or passed against
+# whatever the machine happened to already have installed.
+$menuKeys = foreach ($menuRoot in @('Directory', 'Directory\Background')) {
+    foreach ($n in $menuNames) { "HKCU:\Software\Classes\$menuRoot\shell\$n" }
 }
 
 if ($IncludeLive) {
@@ -646,6 +658,18 @@ if ($IncludeLive) {
     $savedConfig = $null
     if (Test-Path -LiteralPath $liveConfig) {
         $savedConfig = Get-Content -LiteralPath $liveConfig -Raw
+    }
+
+    # Runs first, and deliberately checks the suite's own footing rather than
+    # the product's. powershell.exe -File on a path that does not exist writes
+    # its complaint and returns a non-zero code, which reads as "the installer
+    # failed" -- so the one thing that must never be in doubt is that these are
+    # the real scripts. See the note on $menuRoot above for how they stopped
+    # being that.
+    Test-Case 'the suite is pointed at the scripts it is about to run' {
+        Assert-True (Test-Path -LiteralPath $installer) "installer not found at: $installer"
+        Assert-True (Test-Path -LiteralPath $uninstaller) "uninstaller not found at: $uninstaller"
+        Assert-True ([System.IO.Path]::IsPathRooted($installer)) "not an absolute path: $installer"
     }
 
     Test-Case 'the installer completes without errors' {
