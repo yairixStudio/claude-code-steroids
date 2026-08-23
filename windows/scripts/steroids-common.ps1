@@ -133,7 +133,13 @@ function Resolve-TargetDir {
 # from the tray app), so a plain Write-Error would be invisible. Surface real
 # problems in a message box instead.
 function Show-SteroidsError {
-    param([string]$Message)
+    param([string]$Message, [switch]$Quiet)
+
+    # -Quiet is what -DryRun passes. A message box is the right answer to a
+    # right-click that cannot proceed, but it is a hang to anything unattended:
+    # the box blocks until someone clicks it, and the test suite has nobody to
+    # click. A warning says the same thing and returns.
+    if ($Quiet) { Write-Warning $Message; return }
 
     Write-Error $Message
     try {

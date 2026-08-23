@@ -29,19 +29,28 @@ param(
 
 $Dir = Resolve-TargetDir $Dir
 
+# -DryRun is "tell me what you would run", so it reports a problem and carries
+# on building the command line instead of stopping behind a modal dialog that
+# nothing unattended can dismiss.
 if (-not (Test-WindowsTerminal)) {
-    Show-SteroidsError "Windows Terminal (wt.exe) was not found.`n`nInstall it from the Microsoft Store: https://aka.ms/terminal"
-    exit 1
+    Show-SteroidsError "Windows Terminal (wt.exe) was not found.`n`nInstall it from the Microsoft Store: https://aka.ms/terminal" -Quiet:$DryRun
+    if (-not $DryRun) { exit 1 }
 }
 $config = Get-SteroidsConfig
 if ($Agent) { $config.Agent = $Agent }
-if ($Columns -eq 0) { $Columns = $config.Columns }
-if ($Rows -eq 0)    { $Rows = $config.Rows }
 
-$agent = Get-SteroidsAgent $config.Agent
-if (-not (Test-AgentCli $agent)) {
-    Show-SteroidsError "$($agent.Label) was not found on your PATH.`n`nInstall it with:`n    $($agent.InstallHint)`n`nThen reopen Explorer so it picks up the new PATH, or pick the other agent in the tray menu's Settings."
-    exit 1
+# Local names, deliberately not $Columns/$Rows/$agent. A variable name matches
+# its parameter case-insensitively, so writing back to one re-runs that
+# parameter's validation attribute -- which is how assigning the agent object to
+# $agent used to throw [ValidateSet] and turn every launch into "was not found
+# on your PATH". The grid dimensions were the same trap waiting to be sprung.
+$gridColumns = if ($Columns -eq 0) { $config.Columns } else { $Columns }
+$gridRows    = if ($Rows    -eq 0) { $config.Rows }    else { $Rows }
+
+$selected = Get-SteroidsAgent $config.Agent
+if (-not (Test-AgentCli $selected)) {
+    Show-SteroidsError "$($selected.Label) was not found on your PATH.`n`nInstall it with:`n    $($selected.InstallHint)`n`nThen reopen Explorer so it picks up the new PATH, or pick the other agent in the tray menu's Settings." -Quiet:$DryRun
+    if (-not $DryRun) { exit 1 }
 }
 
 $run = Get-AgentPaneCommand $config
@@ -70,16 +79,16 @@ function Add-MoveLeft {
 #    remaining pane each time leaves every column exactly 1/$Columns wide, and
 #    ends with the focus in the rightmost one.
 Add-FirstPane
-for ($i = 1; $i -lt $Columns; $i++) {
-    Add-Split '-V' (($Columns - $i) / ($Columns - $i + 1))
+for ($i = 1; $i -lt $gridColumns; $i++) {
+    Add-Split '-V' (($gridColumns - $i) / ($gridColumns - $i + 1))
 }
 
 # 2) Same trick vertically inside each column, walking right-to-left. After the
 #    last row of a column the focus sits in its bottom pane, so move-focus left
 #    lands in the next (still unsplit, full-height) column.
-for ($c = $Columns; $c -ge 1; $c--) {
-    for ($j = 1; $j -lt $Rows; $j++) {
-        Add-Split '-H' (($Rows - $j) / ($Rows - $j + 1))
+for ($c = $gridColumns; $c -ge 1; $c--) {
+    for ($j = 1; $j -lt $gridRows; $j++) {
+        Add-Split '-H' (($gridRows - $j) / ($gridRows - $j + 1))
     }
     if ($c -gt 1) { Add-MoveLeft }
 }

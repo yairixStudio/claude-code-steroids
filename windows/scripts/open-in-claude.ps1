@@ -22,16 +22,26 @@ param(
 
 $Dir = Resolve-TargetDir $Dir
 
+# -DryRun is "tell me what you would run", so it reports a problem and carries
+# on building the command line instead of stopping behind a modal dialog that
+# nothing unattended can dismiss.
 if (-not (Test-WindowsTerminal)) {
-    Show-SteroidsError "Windows Terminal (wt.exe) was not found.`n`nInstall it from the Microsoft Store: https://aka.ms/terminal"
-    exit 1
+    Show-SteroidsError "Windows Terminal (wt.exe) was not found.`n`nInstall it from the Microsoft Store: https://aka.ms/terminal" -Quiet:$DryRun
+    if (-not $DryRun) { exit 1 }
 }
 $config = Get-SteroidsConfig
 if ($Agent) { $config.Agent = $Agent }
-$agent = Get-SteroidsAgent $config.Agent
-if (-not (Test-AgentCli $agent)) {
-    Show-SteroidsError "$($agent.Label) was not found on your PATH.`n`nInstall it with:`n    $($agent.InstallHint)`n`nThen reopen Explorer so it picks up the new PATH, or pick the other agent in the tray menu's Settings."
-    exit 1
+
+# NOT $agent. PowerShell matches variable names case-insensitively, so $agent
+# and the -Agent parameter above are one variable -- and assigning an object to
+# it re-runs the parameter's [ValidateSet], which throws. $agent then stayed the
+# string it already was, $agent.Bin came back $null, and every launch died with
+# "was not found on your PATH" on machines where the CLI was right there on it.
+# Keep this name distinct.
+$selected = Get-SteroidsAgent $config.Agent
+if (-not (Test-AgentCli $selected)) {
+    Show-SteroidsError "$($selected.Label) was not found on your PATH.`n`nInstall it with:`n    $($selected.InstallHint)`n`nThen reopen Explorer so it picks up the new PATH, or pick the other agent in the tray menu's Settings." -Quiet:$DryRun
+    if (-not $DryRun) { exit 1 }
 }
 
 # -w new forces a brand-new window: without it, a "windowingBehavior" of

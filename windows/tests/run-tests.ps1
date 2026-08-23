@@ -102,6 +102,58 @@ foreach ($f in @($sourceFiles | Where-Object { $_.Extension -eq '.ps1' })) {
 }
 
 # ===========================================================================
+Section 'Parameter shadowing — the bug that broke every single launch'
+# ===========================================================================
+# PowerShell matches variable names case-insensitively, so a local $agent and a
+# -Agent parameter are one variable. Assigning the agent *object* to it re-ran
+# the parameter's [ValidateSet], which threw; $agent stayed the string it was,
+# $agent.Bin came back $null, and every launch died with "was not found on your
+# PATH" on machines where the CLI was sitting right there on it.
+#
+# The shape is what makes it worth a static check: it is invisible on the line
+# that causes it, it fails at run time and never at parse time, and any
+# parameter carrying a validation attribute can be hit by it.
+
+foreach ($f in @($sourceFiles | Where-Object { $_.Extension -eq '.ps1' })) {
+    $rel = $f.FullName.Substring($root.Length + 1)
+
+    Test-Case "$rel never assigns to one of its own validated parameters" {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$null)
+
+        # Every parameter of every param block in the file - the script's own
+        # and those of the functions it defines - that carries a Validate*
+        # attribute, and so re-validates on assignment.
+        $guarded = @{}
+        foreach ($block in $ast.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.ParamBlockAst] }, $true)) {
+            foreach ($p in $block.Parameters) {
+                $attrs = @($p.Attributes | Where-Object { $_.TypeName.Name -like 'Validate*' })
+                if ($attrs.Count -gt 0) {
+                    $guarded[$p.Name.VariablePath.UserPath] =
+                        ($attrs | ForEach-Object { $_.TypeName.Name }) -join ', '
+                }
+            }
+        }
+        if ($guarded.Count -eq 0) { return }
+
+        $offenders = @()
+        foreach ($a in $ast.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+            if ($a.Left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { continue }
+            $name = $a.Left.VariablePath.UserPath
+            foreach ($g in $guarded.Keys) {
+                # -eq on strings is case-insensitive, which is exactly the
+                # comparison PowerShell itself makes when resolving the name.
+                if ($name -eq $g) {
+                    $offenders += "line $($a.Extent.StartLineNumber): `$$name = ... re-runs [$($guarded[$g])] on -$g"
+                }
+            }
+        }
+        Assert-True ($offenders.Count -eq 0) ($offenders -join '; ')
+    }
+}
+
+# ===========================================================================
 Section 'Resolve-TargetDir — Explorer''s %V mangling'
 # ===========================================================================
 . (Join-Path $scriptsDir 'steroids-common.ps1')
@@ -209,6 +261,48 @@ Test-Case 'a single session opens one pane in a new window' {
     Assert-Equal 1 (@($a | Where-Object { $_ -eq 'new-tab' }).Count) 'one tab'
     Assert-True ($a -notcontains 'split-pane') 'no splits'
     Assert-True ($a -contains 'new') 'new window'
+}
+
+# ===========================================================================
+Section 'Launching — what a right-click actually runs'
+# ===========================================================================
+# The gap that let the launch break completely: every grid test above calls the
+# script the way the *neutral* menu entries do, and the four pinned entries pass
+# -Agent. That one extra argument was the difference between a working test
+# suite and a product where no menu entry launched anything at all.
+#
+# These run the scripts exactly as the registry entries do, both pinned agents
+# and both scripts, and read the command they would hand to Windows Terminal.
+# Warnings are muted (3>$null) so a machine with only one agent installed still
+# gets a deterministic result instead of a wall of "not found" text.
+
+$openScript = Join-Path $scriptsDir 'open-in-claude.ps1'
+
+function Get-PaneCommandFrom {
+    param([string]$Script, [string]$AgentId)
+
+    $a = if ($AgentId) { @(& $Script -Dir $env:USERPROFILE -Agent $AgentId -DryRun 3>$null) }
+         else          { @(& $Script -Dir $env:USERPROFILE -DryRun 3>$null) }
+    # The pane command is the last argument of every launch.
+    return [string]$a[-1]
+}
+
+foreach ($launcher in @(@('open-in-claude.ps1', $openScript), @('steroids-grid.ps1', $gridScript))) {
+    foreach ($pinned in @(@('claude', 'codex'), @('codex', 'claude'))) {
+
+        Test-Case "$($launcher[0]) -Agent $($pinned[0]) launches $($pinned[0])" {
+            $pane = Get-PaneCommandFrom -Script $launcher[1] -AgentId $pinned[0]
+            Assert-True ($pane -match $pinned[0]) "the pinned agent is missing from: $pane"
+            Assert-True ($pane -notmatch $pinned[1]) "the other agent leaked in: $pane"
+        }
+    }
+
+    Test-Case "$($launcher[0]) with no pin follows the settings file" {
+        # The neutral entries and the hotkeys take this path. The suite's
+        # throwaway config selects claude.
+        $pane = Get-PaneCommandFrom -Script $launcher[1]
+        Assert-True ($pane -match 'claude') "did not follow the configured agent: $pane"
+    }
 }
 
 # ===========================================================================
