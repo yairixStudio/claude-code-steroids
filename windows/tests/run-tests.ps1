@@ -251,9 +251,40 @@ Test-Case 'split sizes are the fractions that make equal columns' {
     Assert-Equal '0.5'    $sizes[1] 'second vertical split'
 }
 
-Test-Case 'the grid walks left once per column boundary' {
+Test-Case 'the grid names the pane to split instead of walking to it' {
+    # move-focus described a route through the layout, and was only right if
+    # every split had already landed. Under nine simultaneous agent startups it
+    # was not: the terminal fell behind the command list and whole columns came
+    # out unsplit while others were split twice over. focus-pane takes an index
+    # in creation order, which cannot go stale.
+    foreach ($case in @(@(3, 3), @(2, 2), @(4, 3), @(1, 4))) {
+        $a = Get-GridArgs -Columns $case[0] -Rows $case[1]
+        Assert-True ($a -notcontains 'move-focus') 'a focus walk came back'
+
+        $targets = @()
+        for ($i = 0; $i -lt $a.Count; $i++) {
+            if ($a[$i] -eq 'focus-pane') {
+                Assert-Equal '--target' $a[$i + 1] 'focus-pane must address a pane by index'
+                $targets += [int]$a[$i + 2]
+            }
+        }
+        # One per column, and the columns are numbered left to right because
+        # every vertical split puts its new pane on the right.
+        Assert-Equal $case[0] $targets.Count "one focus-pane per column ($($case[0])x$($case[1]))"
+        Assert-Equal (0..($case[0] - 1) -join ',') ($targets -join ',') 'column indices'
+    }
+}
+
+Test-Case 'splitting a column never renumbers the others' {
+    # The whole scheme rests on this: rows are appended to the end of the
+    # numbering, so column 2 is still index 1 after column 1 has grown rows.
+    # Every focus-pane target must therefore be below the column count.
     $a = Get-GridArgs -Columns 3 -Rows 3
-    Assert-Equal 2 (@($a | Where-Object { $_ -eq 'move-focus' }).Count) 'move-focus count'
+    for ($i = 0; $i -lt $a.Count; $i++) {
+        if ($a[$i] -eq 'focus-pane') {
+            Assert-True ([int]$a[$i + 2] -lt 3) "target $($a[$i + 2]) is not one of the three columns"
+        }
+    }
 }
 
 Test-Case 'a single session opens one pane in a new window' {

@@ -74,26 +74,38 @@ function Add-Split([string]$direction, [double]$size) {
     $wt.Add('--size'); $wt.Add((Format-Size $size))
     $wt.Add('-d'); $wt.Add($Dir); $wt.AddRange([string[]]$run)
 }
-function Add-MoveLeft {
-    $wt.Add(';'); $wt.Add('move-focus'); $wt.Add('left')
+# wt numbers panes in creation order and focus-pane addresses them by that
+# number, so this says exactly which pane to split next instead of describing how
+# to walk to it.
+#
+# The walk is what used to be here -- move-focus left, once per column boundary --
+# and it is only correct if every split has already finished. It usually has. Nine
+# agents starting at once is the case where it has not: the terminal's UI thread
+# falls behind the command list, move-focus reads a layout that is one or two
+# splits out of date, and the rest of the grid is built on the wrong panes. What
+# that looks like on screen is a column that never got divided at all sitting next
+# to one that got divided twice too often. An index cannot drift like that.
+function Add-FocusPane([int]$index) {
+    $wt.Add(';'); $wt.Add('focus-pane'); $wt.Add('--target'); $wt.Add("$index")
 }
 
-# 1) Slice the window into $Columns equal columns. Splitting off (n-1)/n of the
-#    remaining pane each time leaves every column exactly 1/$Columns wide, and
-#    ends with the focus in the rightmost one.
+# 1) Slice the window into $gridColumns equal columns. Splitting off (n-1)/n of
+#    the remaining pane each time leaves every column exactly 1/$gridColumns
+#    wide -- and because each split's new pane is the one to the right, the
+#    columns end up numbered 0..n-1 from left to right.
 Add-FirstPane
 for ($i = 1; $i -lt $gridColumns; $i++) {
     Add-Split '-V' (($gridColumns - $i) / ($gridColumns - $i + 1))
 }
 
-# 2) Same trick vertically inside each column, walking right-to-left. After the
-#    last row of a column the focus sits in its bottom pane, so move-focus left
-#    lands in the next (still unsplit, full-height) column.
-for ($c = $gridColumns; $c -ge 1; $c--) {
+# 2) Same trick vertically inside each column, addressing each one by its number.
+#    Splitting a column appends its new panes to the end of the numbering, so the
+#    column indices stay put no matter how many rows have been added elsewhere.
+for ($c = 0; $c -lt $gridColumns; $c++) {
+    Add-FocusPane $c
     for ($j = 1; $j -lt $gridRows; $j++) {
         Add-Split '-H' (($gridRows - $j) / ($gridRows - $j + 1))
     }
-    if ($c -gt 1) { Add-MoveLeft }
 }
 
 # -w new: never hijack a terminal you are already working in.
