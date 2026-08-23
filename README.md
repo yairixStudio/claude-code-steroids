@@ -119,9 +119,11 @@ one-click tile button.
 ## 📦 Install — Windows
 
 **Requirements:** Windows 10/11, [Windows Terminal](https://aka.ms/terminal), and at least one
-agent CLI on your `PATH` — [Claude Code](https://claude.com/claude-code)
-(`npm i -g @anthropic-ai/claude-code`) or [OpenAI Codex](https://developers.openai.com/codex)
-(`npm i -g @openai/codex`).
+agent CLI — [Claude Code](https://claude.com/claude-code)
+(`npm i -g @anthropic-ai/claude-code`, or its native installer) or
+[OpenAI Codex](https://developers.openai.com/codex) (`npm i -g @openai/codex`).
+It does not have to be on `PATH`: `%USERPROFILE%\.local\bin` and `%APPDATA%\npm`
+are searched too.
 
 ```powershell
 git clone https://github.com/yairixStudio/claude-code-steroids.git
@@ -178,9 +180,18 @@ config edited into nonsense can never be the reason a hotkey stops working.
 Reinstalling never overwrites it.
 
 `paths` is a fourth, macOS-only key — the **Locate…** button stores a CLI that
-isn't on `PATH` there. Windows has no equivalent: an npm global install puts the
-binary on `PATH`, and a hand-typed path would have to survive `cmd`'s
-quote-stripping rules to reach the pane intact.
+isn't on `PATH` there. Windows has no equivalent, and needs one less than it
+looks: a hand-typed path would have to survive `cmd`'s quote-stripping rules to
+reach the pane intact, and the launch scripts already search for the CLI
+themselves when the `PATH` they inherited does not mention it — the PATH stored
+for your account, then `%USERPROFILE%\.local\bin` (Claude Code's native
+installer) and `%APPDATA%\npm` (npm's shims). Settings says `found off PATH` when
+that is what located it.
+
+That fallback exists because Explorer hands every right-click a copy of the
+environment it captured when it started. Install an agent after you log in and
+the menu entries keep failing while the same command works in every terminal you
+open — so "not on your `PATH`" was, in practice, almost never the real problem.
 
 ### What each agent is launched with
 
@@ -188,6 +199,11 @@ quote-stripping rules to reach the pane intact.
 |---|---|---|
 | Claude Code | `claude --dangerously-skip-permissions` | `claude` |
 | OpenAI Codex | `codex --dangerously-bypass-approvals-and-sandbox` | `codex` |
+
+On Windows that line is handed to `powershell -NoLogo -NoExit -Command`, so the
+pane stays open at a PowerShell prompt in the same folder once the agent exits.
+A single session is centred at about two thirds of the screen width and four
+fifths of its height; the grid maximizes and fills it.
 
 Closing a swarm is agent-blind on purpose: **Close ALL Agent Sessions** ends
 Claude *and* Codex panes, so a swarm you started this morning is still yours to

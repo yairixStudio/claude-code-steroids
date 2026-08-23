@@ -1,10 +1,15 @@
 # Windows Testing Guide
 
-**You are the first person to run this Windows code.** Everything in `windows/` was
-written and reviewed on a Mac, where PowerShell and `csc.exe` do not exist — so not one
-line of it has been executed or even compiled. The macOS half is fully tested (91
-automated tests, plus live checks); this half is not. That is exactly what this guide is
-for.
+Everything in `windows/` was written and reviewed on a Mac, where PowerShell and
+`csc.exe` do not exist. It has now been run on Windows once — see
+[FIRST-RUN-REPORT.md](FIRST-RUN-REPORT.md), which found that **no launch worked at
+all** and fixed it. Read that first; it tells you which parts are now verified and
+which are still exactly as untested as they were.
+
+Short version of what is still untouched: **Parts 3, 4 and 5 below have never been
+run by anyone**, the live suite has never completed a clean pass, and the Settings
+window has never been opened. The macOS half is fully tested (91 automated tests,
+plus live checks); this half is not. That is what this guide is for.
 
 Take about **30 minutes**. Parts 1–2 are automated and take five. Parts 3–5 are manual,
 and they cover the surfaces no test can reach.
@@ -116,6 +121,11 @@ Send the failing lines verbatim. Every test prints what it expected and what it 
 This one installs for real, compiles the tray app, opens Terminal windows and closes them
 again. Close anything you care about in Windows Terminal first.
 
+> **Run this from a plain PowerShell window, not from inside Windows Terminal.** The
+> suite tiles, resizes and closes Terminal windows on the current virtual desktop, and
+> it cannot tell the window you launched it from apart from the ones it opened. Two
+> attempts to run it from a Windows Terminal pane ended with that pane gone.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\windows\tests\run-tests.ps1 -IncludeLive
 ```
@@ -165,7 +175,7 @@ wiring has never run. Click **Settings...**.
 
 - [ ] A window titled **Claude Steroids - Settings** opens
 - [ ] It shows: **Agent** (two radio buttons), **Grid** (a dropdown), **Autonomy** (a checkbox), a hotkey reminder, and a **Close** button
-- [ ] Under the radio buttons, a line reads `OK  C:\...\claude.cmd` (or similar) — or `not found - npm i -g ...` in red if that CLI is missing
+- [ ] Under the radio buttons, a line reads `OK  C:\...\claude.exe` (or similar). Two other states are possible and both are correct: `found off PATH  C:\...` when the CLI was located by the fallback search rather than on `PATH`, and `not found - npm i -g ...` in red when it is genuinely absent
 - [ ] Under the checkbox, a line reads `Runs:  claude --dangerously-skip-permissions`
 
 Now exercise it. **There is no OK button — every change saves the moment you click.**
@@ -220,7 +230,8 @@ Right-click a folder in Explorer. **On Windows 11 these live under "Show more op
 
 With the agent set to **Claude Code**, on your scratch folder:
 
-- [ ] **Open Coding Agent Here** → a window opens **in that folder**, prompt shows `claude`
+- [ ] **Open Coding Agent Here** → a window opens **in that folder**, running `claude`. It should arrive **centred**, at roughly two thirds of the screen width and four fifths of its height — not at Terminal's default size off to one side
+- [ ] The tab is titled after the agent, not after `cmd` — panes are hosted by PowerShell now, so when the agent exits you are left at a PowerShell prompt in that folder
 - [ ] Switch the agent to **OpenAI Codex** in Settings, then click it again → same folder, now `codex`
 - [ ] Set it back to **Claude Code**
 
@@ -238,9 +249,10 @@ Now set the agent to **OpenAI Codex** and repeat:
 
 Set it back to **Claude Code**.
 
-> If you only have one CLI installed, the entry for the missing one should show a clear
-> message box naming it and giving the `npm i -g ...` command — not fail silently. Please
-> confirm that.
+> If you only have one CLI installed, the entry for the missing one should show a message
+> box that names the agent, lists **where it looked**, gives the `npm i -g ...` command,
+> and points out that Explorer may simply be running with a stale environment — not fail
+> silently, and not blame `PATH` without saying what it checked. Please confirm that.
 
 ### 3. Folder names that break things — **these are regression checks**
 
@@ -279,6 +291,7 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\steroids-scratch\אתר ש
 On your scratch folder:
 
 - [ ] **Steroids Mode (9x Grid)** opens **one maximized window with nine panes**
+- [ ] **All nine are the same size**, in three equal columns of three. This is the one to look at hardest: the grid used to be built by walking the focus from column to column, which came out wrong whenever the machine was busy enough for the terminal to fall behind — and nine agents starting at once is exactly that. A column left full height beside a column split too many times is the failure. Try it a few times, and on a loaded machine
 - [ ] Every pane is in the right folder
 - [ ] Set Grid to `2 x 2` in Settings, click it again → **four** panes
 
@@ -372,9 +385,12 @@ Not bugs — no need to report these:
 - **Six flat entries, not a nested submenu.** A cascading flyout would be nicer; it was
   not written because a mistake in that mechanism produces a menu that opens and does
   nothing, and nobody could test it. Worth doing once someone can.
-- **No "Locate…" button in Settings**, unlike macOS. On Windows an npm global install puts
-  the binary on `PATH`, and a hand-typed path would have to survive `cmd`'s
-  quote-stripping rules to reach the pane intact. Fixing `PATH` is the Windows answer.
+- **No "Locate…" button in Settings**, unlike macOS — a hand-typed path would have to
+  survive `cmd`'s quote-stripping rules to reach the pane intact. It is less needed than
+  it was: the launch scripts now look past the `PATH` they inherited, into the PATH
+  persisted for your account and into `%USERPROFILE%\.local\bin` and `%APPDATA%\npm`,
+  which covers both the native installer and npm. Settings reports `found off PATH` when
+  that fallback is what located the CLI.
 - **A hotkey may be dead** if another app claimed the combination first. The tray app says
   so with a balloon tip at startup.
 - **The Steroids grid is panes in one window** on Windows, not nine separate windows as on
