@@ -44,6 +44,20 @@ $script:SteroidsAgents = @(
     }
 )
 
+# Where an agent CLI lives when it is installed but the PATH we inherited does
+# not mention it. Not a guess list -- these are the two layouts the agents
+# actually ship in:
+#
+#   %USERPROFILE%\.local\bin   Claude Code's native installer (claude.exe, with
+#                              its versions under %USERPROFILE%\.local\share)
+#   %APPDATA%\npm              the shims npm -g writes (claude.cmd, codex.cmd)
+#
+# See Resolve-AgentCommand for why looking here at all is necessary.
+$script:SteroidsAgentHomes = @(
+    (Join-Path $env:USERPROFILE '.local\bin'),
+    (Join-Path $env:APPDATA 'npm')
+)
+
 function Get-SteroidsAgent {
     param([string]$Id)
 
@@ -158,10 +172,101 @@ function Test-WindowsTerminal {
     return [bool](Get-Command wt.exe -ErrorAction SilentlyContinue)
 }
 
+# The PATH a fresh login would hand us, which is not necessarily the one we
+# inherited. Explorer captures its environment once, at startup, and passes that
+# copy to everything it launches -- so a CLI installed after you logged in is
+# invisible to the right-click entries while working perfectly in every terminal
+# you open afterwards. Reading the persisted value is how we tell "not installed"
+# apart from "installed since Explorer started", which are the same error message
+# to a user and completely different problems.
+function Get-PersistedPathDirectory {
+    $out = @()
+    foreach ($key in @('HKCU:\Environment',
+                       'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment')) {
+        try {
+            $value = (Get-ItemProperty -Path $key -Name 'Path' -ErrorAction Stop).Path
+        } catch { continue }
+        if ([string]::IsNullOrWhiteSpace($value)) { continue }
+        # Stored as REG_EXPAND_SZ on most machines, so %USERPROFILE% and friends
+        # are still literal text at this point.
+        foreach ($dir in ([Environment]::ExpandEnvironmentVariables($value) -split ';')) {
+            if (-not [string]::IsNullOrWhiteSpace($dir)) { $out += $dir.Trim() }
+        }
+    }
+    return $out
+}
+
+# Resolve an agent to something that can actually be typed into a pane.
+#
+#   .Found   whether we located it at all
+#   .OnPath  Get-Command saw it, so the pane command stays the bare name it has
+#            always been and nothing about the launch changes
+#   .Path    the executable we found, when we had to look past our own PATH
+#   .Launch  what goes on the pane's command line -- the bare name, or the full
+#            path quoted
+#
+# The fallback search exists because "was not found on your PATH" was, in
+# practice, almost never true: the CLI was installed, just not in the stale
+# environment Explorer handed the script. Telling someone to reinstall software
+# they already have is the worst possible answer, so find it instead.
+function Resolve-AgentCommand {
+    param([psobject]$Agent)
+
+    $onPath = Get-Command $Agent.Bin -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($onPath) {
+        return [pscustomobject]@{
+            Found = $true; OnPath = $true
+            Path = $onPath.Source; Launch = $Agent.Bin
+        }
+    }
+
+    # Only the extensions cmd.exe and PowerShell will actually execute. A bare,
+    # extensionless shim (npm writes one for Git Bash) is not one of them.
+    $searched = @()
+    foreach ($dir in (@(Get-PersistedPathDirectory) + $script:SteroidsAgentHomes)) {
+        if ($searched -contains $dir) { continue }
+        $searched += $dir
+        foreach ($ext in @('.exe', '.cmd', '.bat', '.com')) {
+            $candidate = Join-Path $dir ($Agent.Bin + $ext)
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                return [pscustomobject]@{
+                    Found = $true; OnPath = $false
+                    Path = $candidate; Launch = Format-CommandLineArgument $candidate
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{ Found = $false; OnPath = $false; Path = $null; Launch = $Agent.Bin }
+}
+
 function Test-AgentCli {
     param([psobject]$Agent)
 
-    return [bool](Get-Command $Agent.Bin -ErrorAction SilentlyContinue)
+    return [bool](Resolve-AgentCommand $Agent).Found
+}
+
+# What to put in front of someone when an agent cannot be found anywhere. The
+# two halves answer two different situations and both are worth saying: it is
+# genuinely missing, or it is installed and Explorer simply has not seen it yet.
+function Get-AgentMissingMessage {
+    param([psobject]$Agent)
+
+    return @(
+        "$($Agent.Label) was not found."
+        ''
+        'Looked on your PATH, on the PATH stored for your account, and in:'
+        ($script:SteroidsAgentHomes | ForEach-Object { "    $_" })
+        ''
+        'If it is not installed yet:'
+        "    $($Agent.InstallHint)"
+        ''
+        'If it IS installed, Explorer is still running with the environment it'
+        'started with. Sign out and back in, or restart Explorer:'
+        '    Stop-Process -Name explorer -Force'
+        ''
+        "Or pick the other agent in the tray menu's Settings."
+    ) -join "`n"
 }
 
 # Every pane runs the agent inside cmd /k so the pane survives the agent exiting
@@ -175,11 +280,22 @@ function Test-AgentCli {
 #
 # NOTE: the YOLO flag ("skip approval prompts" in Settings) lets the agent read,
 # edit and run commands without asking. Only point it at folders you trust.
+#
+# -Executable overrides the bare name with what Resolve-AgentCommand found, and
+# is passed only when the CLI was not on our PATH -- so the ordinary launch is
+# byte for byte what it always was, and a path appears only in the case that
+# used to fail outright.
+#
+# A quoted full path survives cmd's /k rules both ways round, which is what
+# makes this safe. cmd keeps the quotes when there is whitespace between them
+# and the text inside names an executable ("C:\Program Files\...\claude.exe"
+# --flag), and strips them when there is not ("C:\Users\me\.local\bin\claude.exe"
+# --flag -> unquoted, and it has no spaces to lose).
 function Get-AgentPaneCommand {
-    param([psobject]$Config = (Get-SteroidsConfig))
+    param([psobject]$Config = (Get-SteroidsConfig), [string]$Executable)
 
     $agent = Get-SteroidsAgent $Config.Agent
-    $line = $agent.Bin
+    $line = if ($Executable) { $Executable } else { $agent.Bin }
     if ($Config.Yolo) { $line += ' ' + $agent.YoloFlag }
     return @('cmd', '/k', $line)
 }

@@ -306,6 +306,68 @@ foreach ($launcher in @(@('open-in-claude.ps1', $openScript), @('steroids-grid.p
 }
 
 # ===========================================================================
+Section 'Finding an agent that is installed but not on our PATH'
+# ===========================================================================
+# Explorer hands every right-click the environment it captured when it started,
+# so a CLI installed since you logged in is invisible to it while working in any
+# terminal you open. "Was not found on your PATH" was technically true and
+# useless: the fix is to look where the installers actually put things.
+
+Test-Case 'an agent on PATH resolves to the bare name, exactly as before' {
+    # Whatever is installed here, the contract is the same: on PATH means the
+    # pane command does not change shape at all.
+    foreach ($id in @('claude', 'codex')) {
+        $resolved = Resolve-AgentCommand (Get-SteroidsAgent $id)
+        if (-not $resolved.OnPath) { continue }
+        Assert-Equal $id $resolved.Launch "an on-PATH agent must launch by name"
+        Assert-True ([bool]$resolved.Found) 'OnPath implies Found'
+        Assert-True (Test-Path -LiteralPath $resolved.Path) "reported a path that does not exist: $($resolved.Path)"
+    }
+}
+
+Test-Case 'an agent nobody has resolves to not-found, without throwing' {
+    $resolved = Resolve-AgentCommand ([pscustomobject]@{
+        Id = 'ghost'; Label = 'Ghost'; Bin = 'steroids-no-such-cli'
+        YoloFlag = '--nope'; InstallHint = 'npm i -g nothing' })
+    Assert-True (-not $resolved.Found) 'claimed to find a CLI that does not exist'
+    Assert-True (-not $resolved.OnPath) 'claimed it was on PATH'
+}
+
+Test-Case 'the persisted PATH is readable and looks like a PATH' {
+    # This is the list a fresh login would have given us, and the whole reason
+    # the fallback can beat a stale Explorer.
+    $dirs = @(Get-PersistedPathDirectory)
+    Assert-True ($dirs.Count -gt 0) 'no directories came back from the registry PATH'
+    Assert-True (@($dirs | Where-Object { $_ -match '^[A-Za-z]:\\' }).Count -gt 0) `
+        'nothing that looks like an absolute Windows path'
+    Assert-True (@($dirs | Where-Object { $_ -match '%' }).Count -eq 0) `
+        'an environment variable was left unexpanded'
+}
+
+Test-Case 'a full path reaches the pane as one argument, spaces or not' {
+    # What Get-AgentPaneCommand -Executable produces has to survive the same
+    # trip every other argument does, and arrive as a single token.
+    Initialize-SteroidsInterop
+    foreach ($exe in @('C:\Users\me\.local\bin\claude.exe',
+                       'C:\Program Files\nodejs\claude.cmd',
+                       'C:\Users\me\AppData\Roaming\npm\codex.cmd')) {
+        $quoted = Format-CommandLineArgument $exe
+        $pane = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $true }) -Executable $quoted
+        Assert-Equal "$quoted --dangerously-skip-permissions" $pane[-1] 'line shape'
+
+        # argv[0] is parsed by the special program-name rules, so lead with a dummy.
+        $line = 'prog.exe ' + (ConvertTo-WtCommandLine (@('new-tab', '-d', 'C:\work') + $pane))
+        $got = @([SteroidsWin]::ParseCommandLine($line) | Select-Object -Skip 1)
+        Assert-Equal "$quoted --dangerously-skip-permissions" $got[-1] "mangled in transit: $exe"
+    }
+}
+
+Test-Case 'no -Executable means nothing about the launch changed' {
+    $pane = Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $true })
+    Assert-Equal 'claude --dangerously-skip-permissions' $pane[-1] 'the ordinary launch must be untouched'
+}
+
+# ===========================================================================
 Section 'Command-line quoting - the bug that broke every folder with a space'
 # ===========================================================================
 # Start-Process on Windows PowerShell joins an -ArgumentList array with plain

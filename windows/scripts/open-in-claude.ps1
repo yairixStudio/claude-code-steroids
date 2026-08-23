@@ -39,15 +39,19 @@ if ($Agent) { $config.Agent = $Agent }
 # "was not found on your PATH" on machines where the CLI was right there on it.
 # Keep this name distinct.
 $selected = Get-SteroidsAgent $config.Agent
-if (-not (Test-AgentCli $selected)) {
-    Show-SteroidsError "$($selected.Label) was not found on your PATH.`n`nInstall it with:`n    $($selected.InstallHint)`n`nThen reopen Explorer so it picks up the new PATH, or pick the other agent in the tray menu's Settings." -Quiet:$DryRun
+
+$resolved = Resolve-AgentCommand $selected
+if (-not $resolved.Found) {
+    Show-SteroidsError (Get-AgentMissingMessage $selected) -Quiet:$DryRun
     if (-not $DryRun) { exit 1 }
 }
 
 # -w new forces a brand-new window: without it, a "windowingBehavior" of
 # useExisting would drop this session into the terminal you are already working
 # in, which is never what a right-click on a folder means.
-$wtArgs = @('-w', 'new', 'new-tab', '-d', $Dir) + (Get-AgentPaneCommand $config)
+$paneCommand = if ($resolved.OnPath) { Get-AgentPaneCommand $config }
+               else { Get-AgentPaneCommand $config -Executable $resolved.Launch }
+$wtArgs = @('-w', 'new', 'new-tab', '-d', $Dir) + $paneCommand
 
 if ($DryRun) { return $wtArgs }
 

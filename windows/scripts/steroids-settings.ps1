@@ -146,23 +146,29 @@ $form.AcceptButton = $closeButton
 # ----------------------------------------------------------------- wiring ---
 
 function Sync-Display {
-    $agent = Get-SteroidsAgent $config.Agent
+    $selected = Get-SteroidsAgent $config.Agent
 
-    $resolved = Get-Command $agent.Bin -ErrorAction SilentlyContinue
-    if ($resolved) {
+    # The same resolver the launch scripts use, so this line reports what a
+    # right-click would really do rather than what this window's own PATH
+    # happens to contain.
+    $resolved = Resolve-AgentCommand $selected
+    if ($resolved.Found) {
         # A command can resolve to an alias or a function; Source is empty for
         # those, so fall back to the name rather than showing a blank tick.
-        $where = if ($resolved.Source) { $resolved.Source } else { $resolved.Name }
-        $statusLabel.Text      = "OK  $where"
+        $where = if ($resolved.Path) { $resolved.Path } else { $selected.Bin }
+        $statusLabel.Text      = if ($resolved.OnPath) { "OK  $where" } else { "found off PATH  $where" }
         $statusLabel.ForeColor = [System.Drawing.SystemColors]::GrayText
     } else {
-        $statusLabel.Text      = "not found - $($agent.InstallHint)"
+        $statusLabel.Text      = "not found - $($selected.InstallHint)"
         $statusLabel.ForeColor = [System.Drawing.Color]::Firebrick
     }
 
-    $line = $agent.Bin
-    if ($config.Yolo) { $line += ' ' + $agent.YoloFlag }
-    $commandLabel.Text = "Runs:  $line"
+    $pane = if ($resolved.OnPath -or -not $resolved.Found) {
+        Get-AgentPaneCommand $config
+    } else {
+        Get-AgentPaneCommand $config -Executable $resolved.Launch
+    }
+    $commandLabel.Text = "Runs:  $($pane[2])"
 }
 
 # Whichever grid the config asks for, land on a real entry: a hand-edited 5x7

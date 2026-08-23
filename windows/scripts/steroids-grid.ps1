@@ -48,12 +48,15 @@ $gridColumns = if ($Columns -eq 0) { $config.Columns } else { $Columns }
 $gridRows    = if ($Rows    -eq 0) { $config.Rows }    else { $Rows }
 
 $selected = Get-SteroidsAgent $config.Agent
-if (-not (Test-AgentCli $selected)) {
-    Show-SteroidsError "$($selected.Label) was not found on your PATH.`n`nInstall it with:`n    $($selected.InstallHint)`n`nThen reopen Explorer so it picks up the new PATH, or pick the other agent in the tray menu's Settings." -Quiet:$DryRun
+
+$resolved = Resolve-AgentCommand $selected
+if (-not $resolved.Found) {
+    Show-SteroidsError (Get-AgentMissingMessage $selected) -Quiet:$DryRun
     if (-not $DryRun) { exit 1 }
 }
 
-$run = Get-AgentPaneCommand $config
+$run = if ($resolved.OnPath) { Get-AgentPaneCommand $config }
+       else { Get-AgentPaneCommand $config -Executable $resolved.Launch }
 $wt = New-Object System.Collections.Generic.List[string]
 
 # wt's --size is a fraction of the pane being split, and it always parses with a
