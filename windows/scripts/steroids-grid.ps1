@@ -1,7 +1,14 @@
 ﻿# Claude Code — Steroids Mode (Windows)
 # Opens a grid of agent sessions — Claude Code or OpenAI Codex, whichever is
-# selected in Settings — as panes in a single, maximized Windows Terminal
-# window. 3x3 by default; Settings can make it anything from 1x1 to 8x8.
+# selected in Settings — each in its own Windows Terminal window, tiled to fill
+# the screen. 3x3 by default; Settings can make it anything from 1x1 to 8x8.
+#
+# One window per session, not one window split into panes. They look the same on
+# screen and behave nothing alike: a pane belongs to its window, so closing a
+# single session, dragging one to the second monitor, or maximizing the one you
+# are reading is impossible — the only thing a pane grid can do is close all
+# nine at once. This is what macOS has always done, and it is what makes each
+# session yours to keep or be rid of on its own.
 #
 # Usage: steroids-grid.ps1 "<folder>" [-Agent claude|codex] [-Columns 3] [-Rows 3]
 #        (folder defaults to the user profile folder; -Columns/-Rows override
@@ -20,8 +27,11 @@ param(
     [ValidateRange(0, 8)][int]$Columns = 0,
     [ValidateRange(0, 8)][int]$Rows = 0,
 
-    # Return the Windows Terminal command line instead of launching it — handy
-    # for checking a custom grid before nine agents land on your machine.
+    # Describe the launch instead of performing it — handy for checking what a
+    # grid would run before nine agents land on your machine. Reports the shape
+    # and the Windows Terminal command line for ONE session, because every
+    # window in the grid is launched with exactly those arguments and only where
+    # each one lands differs.
     [switch]$DryRun
 )
 
@@ -56,62 +66,30 @@ if (-not $resolved.Found) {
 
 $run = if ($resolved.OnPath) { Get-AgentPaneCommand $config }
        else { Get-AgentPaneCommand $config -Executable $resolved.Launch }
-$wt = New-Object System.Collections.Generic.List[string]
 
-# wt's --size is a fraction of the pane being split, and it always parses with a
-# dot — so format it invariantly rather than with the current locale, which
-# would emit "0,6667" on a comma-decimal system and make wt reject the split.
-function Format-Size([double]$value) {
-    return [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, '{0:0.####}', $value)
-}
-
-function Add-FirstPane {
-    $wt.Add('new-tab'); $wt.Add('-d'); $wt.Add($Dir); $wt.AddRange([string[]]$run)
-}
-function Add-Split([string]$direction, [double]$size) {
-    $wt.Add(';'); $wt.Add('split-pane'); $wt.Add($direction)
-    $wt.Add('--size'); $wt.Add((Format-Size $size))
-    $wt.Add('-d'); $wt.Add($Dir); $wt.AddRange([string[]]$run)
-}
-# wt numbers panes in creation order and focus-pane addresses them by that
-# number, so this says exactly which pane to split next instead of describing how
-# to walk to it.
+# One session's command line, launched once per cell.
 #
-# The walk is what used to be here -- move-focus left, once per column boundary --
-# and it is only correct if every split has already finished. It usually has. Nine
-# agents starting at once is the case where it has not: the terminal's UI thread
-# falls behind the command list, move-focus reads a layout that is one or two
-# splits out of date, and the rest of the grid is built on the wrong panes. What
-# that looks like on screen is a column that never got divided at all sitting next
-# to one that got divided twice too often. An index cannot drift like that.
-function Add-FocusPane([int]$index) {
-    $wt.Add(';'); $wt.Add('focus-pane'); $wt.Add('--target'); $wt.Add("$index")
-}
+# -w new is what makes each one a window of its own: without it a Terminal
+# configured to reuse windows would drop every session into the same one as a
+# tab, and a right-click on a folder would quietly become nine tabs in whatever
+# terminal happened to be open.
+#
+# There is no -M here on purpose. Maximizing was how the old single-window grid
+# filled the screen; nine maximized windows would sit on top of one another
+# instead, so the grid places each one in its cell itself.
+$wtArgs = @('-w', 'new', 'new-tab', '-d', $Dir) + $run
 
-# 1) Slice the window into $gridColumns equal columns. Splitting off (n-1)/n of
-#    the remaining pane each time leaves every column exactly 1/$gridColumns
-#    wide -- and because each split's new pane is the one to the right, the
-#    columns end up numbered 0..n-1 from left to right.
-Add-FirstPane
-for ($i = 1; $i -lt $gridColumns; $i++) {
-    Add-Split '-V' (($gridColumns - $i) / ($gridColumns - $i + 1))
-}
-
-# 2) Same trick vertically inside each column, addressing each one by its number.
-#    Splitting a column appends its new panes to the end of the numbering, so the
-#    column indices stay put no matter how many rows have been added elsewhere.
-for ($c = 0; $c -lt $gridColumns; $c++) {
-    Add-FocusPane $c
-    for ($j = 1; $j -lt $gridRows; $j++) {
-        Add-Split '-H' (($gridRows - $j) / ($gridRows - $j + 1))
+if ($DryRun) {
+    # "Sessions" rather than "Count": PowerShell answers $plan.Count on a
+    # one-element array holding an object that has its own Count with the
+    # object's value, not the array's. Two readings of the same expression is
+    # exactly the kind of trap the rest of this project keeps notes about.
+    return [pscustomobject]@{
+        Columns   = $gridColumns
+        Rows      = $gridRows
+        Sessions  = $gridColumns * $gridRows
+        Arguments = $wtArgs
     }
 }
 
-# -w new: never hijack a terminal you are already working in.
-# -M     : maximize, so the grid actually covers the screen the way it does on
-#          macOS instead of cramming nine panes into a default-sized window.
-$wtArgs = @('-w', 'new', '-M') + $wt.ToArray()
-
-if ($DryRun) { return $wtArgs }
-
-Start-WindowsTerminal $wtArgs
+[void](Start-SteroidsGrid -Arguments $wtArgs -Columns $gridColumns -Rows $gridRows)

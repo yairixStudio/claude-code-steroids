@@ -285,12 +285,12 @@ function Get-AgentMissingMessage {
 # reasons about, and when the agent exits you are left at a prompt worth having
 # instead of at a bare drive letter.
 #
-#   -NoExit   keeps the pane alive after the agent ends -- cmd's /k, respelled
-#   -NoLogo   drops the startup banner, which otherwise eats the top of a pane
+#   -NoExit   keeps the session alive after the agent ends -- cmd's /k, respelled
+#   -NoLogo   drops the startup banner, which otherwise eats the top of a window
 #             that in a 3x3 grid is only sixteen lines tall to begin with
 #
-# The profile is deliberately NOT suppressed. This pane becomes your shell for
-# the rest of the session, so it should be your shell.
+# The profile is deliberately NOT suppressed. This shell is what you are left
+# sitting at for the rest of the session, so it should be your shell.
 #
 # The agent command stays ONE argument: -Command takes it as PowerShell source,
 # and keeping it whole is what lets Settings show you the exact line that will
@@ -371,17 +371,45 @@ function Start-WindowsTerminal {
     Start-Process wt.exe -ArgumentList (ConvertTo-WtCommandLine $Arguments)
 }
 
+# ------------------------------------------------------------ new windows --
+
+# Windows Terminal windows cannot be handed back by whatever launched them. One
+# Terminal process owns every window, so Start-Process returns the launcher and
+# not anything on screen -- the only way to name a window we just opened is to
+# know which windows existed a moment ago and take what is new.
+#
+# $Known is that snapshot, keyed by handle. It is passed in rather than taken
+# here because a caller opening several windows has to keep one running set
+# across all of them: a window that took its time appearing must not be handed
+# out twice.
+function Wait-ForNewTerminalWindow {
+    param(
+        [hashtable]$Known,
+        [int]$TimeoutSeconds = 10,
+        [int]$PollMilliseconds = 100,
+        [string]$ProcessName = 'WindowsTerminal'
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds $PollMilliseconds
+        $fresh = @([SteroidsWin]::Find($ProcessName, $false) |
+                     Where-Object { -not $Known.ContainsKey($_.ToInt64()) })
+        if ($fresh.Count -gt 0) { return $fresh }
+    } while ((Get-Date) -lt $deadline)
+
+    return @()
+}
+
 # A single session gets whatever size Windows Terminal's profile last used, put
 # wherever the OS decides -- which on a 1080p screen is a smallish box parked off
 # to one side. A window you are about to work in deserves a shape, so give it a
-# share of the work area and centre it. The grid does not need this: it asks wt
-# for -M and fills the screen.
+# share of the work area and centre it. The grid does its own placing: every one
+# of its windows gets a cell.
 #
-# The window has to be found after the fact. One Windows Terminal process owns
-# every window, so Start-Process hands back the launcher, not anything on screen.
-# Snapshot first, take whatever is new -- and if that is not exactly one window
-# (nothing appeared, or several did because something else opened a terminal at
-# the same moment) leave every window alone rather than move one we did not open.
+# If what appeared is not exactly one window (nothing did, or several did because
+# something else opened a terminal at the same moment) leave every window alone
+# rather than move one we did not open.
 function Set-NewTerminalWindowShape {
     param(
         [System.IntPtr[]]$Before = @(),
@@ -394,15 +422,8 @@ function Set-NewTerminalWindowShape {
     $known = @{}
     foreach ($h in $Before) { $known[$h.ToInt64()] = $true }
 
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $fresh = @()
-    do {
-        Start-Sleep -Milliseconds 200
-        $fresh = @([SteroidsWin]::Find($ProcessName, $false) |
-                     Where-Object { -not $known.ContainsKey($_.ToInt64()) })
-        if ($fresh.Count -gt 0) { break }
-    } while ((Get-Date) -lt $deadline)
-
+    $fresh = @(Wait-ForNewTerminalWindow -Known $known -TimeoutSeconds $TimeoutSeconds `
+                                         -PollMilliseconds 200 -ProcessName $ProcessName)
     if ($fresh.Count -ne 1) { return $false }
 
     $area = [SteroidsWin]::WorkArea()
@@ -415,6 +436,131 @@ function Set-NewTerminalWindowShape {
         ($area.Top  + [int](($areaH - $h) / 2)),
         $w, $h)
     return $true
+}
+
+# ------------------------------------------------------------------- tiling --
+
+# Where each session goes: a rectangle sliced into Columns x Rows cells, filled
+# left to right and top to bottom. Pure arithmetic over plain numbers, so the
+# layout can be checked without opening a single window -- and shared with the
+# arrange script, which tiles whatever is already on screen into the same shape.
+#
+# Each edge is computed from its own boundary rather than by adding a rounded
+# cell width to the previous one. Rounding once per edge keeps every cell within
+# a pixel of its neighbours and lands the last one exactly on the far edge; a
+# rounded width added three times leaves a visible strip of desktop down the
+# right-hand side of any screen whose resolution does not divide evenly.
+function Get-SteroidsGridPlan {
+    param(
+        [ValidateRange(1, 64)][int]$Columns,
+        [ValidateRange(1, 64)][int]$Rows,
+        [int]$Left, [int]$Top, [int]$Width, [int]$Height
+    )
+
+    $cells = New-Object System.Collections.Generic.List[psobject]
+    for ($i = 0; $i -lt ($Columns * $Rows); $i++) {
+        $c = $i % $Columns
+        $r = [int][Math]::Floor($i / $Columns)
+        $x0 = $Left + [int][Math]::Round(($c       * $Width) / $Columns)
+        $x1 = $Left + [int][Math]::Round((($c + 1) * $Width) / $Columns)
+        $y0 = $Top  + [int][Math]::Round(($r       * $Height) / $Rows)
+        $y1 = $Top  + [int][Math]::Round((($r + 1) * $Height) / $Rows)
+        $cells.Add([pscustomobject]@{
+            Index = $i; Column = $c; Row = $r
+            X = $x0; Y = $y0; Width = ($x1 - $x0); Height = ($y1 - $y0)
+        })
+    }
+    return $cells.ToArray()
+}
+
+# Open one Windows Terminal window per cell and put each in its own cell -- the
+# same thing macOS does, where every session in a swarm is a window of its own.
+#
+# It used to be one maximized window split into panes, which looks identical and
+# is not: a pane cannot be closed, moved or dragged to another monitor on its
+# own, and the only way to be rid of one session was to close all nine. Windows
+# Terminal will not let a pane out of its window, so the grid is built out of
+# windows instead.
+#
+# $Arguments is the wt command line for ONE session, exactly what a single
+# right-click would run. It is passed in rather than built here so the test
+# suite can drive this loop with a harmless probe command instead of nine
+# agents, and so this stays about placing windows and nothing else.
+#
+# Launching is serialised: open a window, wait for it, place it, then open the
+# next. Nine wt.exe invocations racing each other is the same overlap that used
+# to build the pane grid on the wrong panes, and waiting costs about what the
+# macOS script already spends between windows.
+function Start-SteroidsGrid {
+    param(
+        [string[]]$Arguments,
+        [ValidateRange(1, 64)][int]$Columns = 3,
+        [ValidateRange(1, 64)][int]$Rows = 3,
+        [int]$TimeoutSeconds = 10,
+        [string]$ProcessName = 'WindowsTerminal'
+    )
+
+    Initialize-SteroidsInterop
+
+    $area = [SteroidsWin]::WorkArea()
+    $plan = @(Get-SteroidsGridPlan -Columns $Columns -Rows $Rows `
+                  -Left $area.Left -Top $area.Top `
+                  -Width ($area.Right - $area.Left) -Height ($area.Bottom - $area.Top))
+
+    # One running set of "windows that are not ours", so a window that appears
+    # two launches after the one that opened it is still claimed exactly once.
+    $known = @{}
+    foreach ($h in [SteroidsWin]::Find($ProcessName, $false)) { $known[$h.ToInt64()] = $true }
+
+    $mine   = New-Object System.Collections.Generic.List[System.IntPtr]
+    $placed = 0
+
+    for ($i = 0; $i -lt $plan.Count; $i++) {
+        Start-WindowsTerminal $Arguments
+
+        foreach ($h in (Wait-ForNewTerminalWindow -Known $known `
+                            -TimeoutSeconds $TimeoutSeconds -ProcessName $ProcessName)) {
+            $known[$h.ToInt64()] = $true
+            if ($mine.Count -lt $plan.Count) { [void]$mine.Add($h) }
+        }
+
+        # Place whatever has arrived so far, in arrival order. A window that
+        # showed up late takes the next free cell rather than none at all, and
+        # the grid fills in visibly as it opens instead of jumping at the end.
+        while ($placed -lt $mine.Count) {
+            $cell = $plan[$placed]
+            [SteroidsWin]::Place($mine[$placed], $cell.X, $cell.Y, $cell.Width, $cell.Height)
+            $placed++
+        }
+    }
+
+    # One last look for a window still on its way, so a slow machine ends up
+    # with a tiled grid rather than eight tiled windows and one stray.
+    if ($mine.Count -lt $plan.Count) {
+        foreach ($h in (Wait-ForNewTerminalWindow -Known $known `
+                            -TimeoutSeconds 3 -ProcessName $ProcessName)) {
+            $known[$h.ToInt64()] = $true
+            if ($mine.Count -lt $plan.Count) { [void]$mine.Add($h) }
+        }
+        while ($placed -lt $mine.Count) {
+            $cell = $plan[$placed]
+            [SteroidsWin]::Place($mine[$placed], $cell.X, $cell.Y, $cell.Width, $cell.Height)
+            $placed++
+        }
+    }
+
+    # Terminal is still sizing itself to its profile for a moment after its
+    # window exists, and a window caught mid-way through that ignores the first
+    # MoveWindow -- which is one cell in a grid coming out the wrong size for no
+    # reason you could reproduce. Going round once more, after every window is
+    # up, costs a quarter of a second and settles it.
+    Start-Sleep -Milliseconds 250
+    for ($i = 0; $i -lt $mine.Count; $i++) {
+        $cell = $plan[$i]
+        [SteroidsWin]::Place($mine[$i], $cell.X, $cell.Y, $cell.Width, $cell.Height)
+    }
+
+    return $mine.ToArray()
 }
 
 # ------------------------------------------------------------------ interop --

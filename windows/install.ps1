@@ -153,7 +153,7 @@ if ($trayInstalled) {
     Write-Host ''
     Write-Host 'Tray icon (by the clock) + global hotkeys, from any app:'
     Write-Host '  Ctrl+Alt+C  New Session       (one window, in your user folder)'
-    Write-Host '  Ctrl+Alt+S  Steroids Mode     (a grid of panes, in your user folder)'
+    Write-Host '  Ctrl+Alt+S  Steroids Mode     (a tiled grid of windows, in your user folder)'
     Write-Host '  Ctrl+Alt+T  Arrange Terminals (grid: 4 -> 2x2, 9 -> 3x3, 10 -> 4x3 ...)'
     Write-Host "The tray menu's Quit submenu closes a swarm again, without confirmation dialogs."
     Write-Host 'The tray app starts automatically at every login.'

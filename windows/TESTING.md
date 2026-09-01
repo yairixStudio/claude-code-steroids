@@ -104,7 +104,8 @@ What it covers, and why each section exists:
 |---|---|
 | **Encoding** | Every `.ps1` and `.cs` must be ASCII-only or carry a UTF-8 BOM. Windows PowerShell reads a BOM-less file in the ANSI code page, and an em dash decoding into three characters once closed a string early and crashed the installer before it registered anything. |
 | **Resolve-TargetDir** | Explorer hands the clicked folder over as `%V`. At a drive root that is `C:\`, whose trailing backslash escapes the closing quote, so the script receives `C:"`. |
-| **Grid construction** | Pane count tracks columns × rows; split fractions use an invariant decimal point (a comma-decimal locale would emit `0,6667` and `wt` would reject every split). |
+| **Grid construction** | A session must be a *window*, never a pane: no `split-pane`, no `focus-pane`, no `-M`, and one `new-tab` per launch. Session count tracks columns × rows, and a grid session runs byte for byte the command line a single right-click runs. |
+| **Tiling maths** | Cells fill the work area exactly — every seam meets, the last cell lands on the far edge, and no two differ by more than a pixel. Rounding one cell width and adding it *n* times leaves a strip of wallpaper down the right of any screen that does not divide evenly. |
 | **Command-line quoting** | Built by hand and checked against Windows' own `CommandLineToArgvW`, not against a second reading of the rules. Includes a drive root with a pinned agent, and non-ASCII folder names. |
 | **Agent session detection** | What the close actions fire at — and, more importantly, what they must leave alone. |
 | **What a close action must not interrupt** | A pane running `npm install -g` is spared: killing Claude's own updater mid-rename breaks the install permanently, not just for now. |
@@ -202,10 +203,10 @@ Then set it back to **Claude Code**, grid **3 x 3**, and leave Autonomy **off**.
 From any app — a browser, Notepad, anything:
 
 - [ ] **Ctrl+Alt+C** opens one Windows Terminal window in your user folder
-- [ ] **Ctrl+Alt+S** opens one maximized window split into nine panes
+- [ ] **Ctrl+Alt+S** opens nine separate windows, tiled three by three over the screen
 - [ ] **Ctrl+Alt+T** retiles the Terminal windows on this virtual desktop into a grid
 
-With Autonomy off, each pane sits at the agent's normal approval prompt — nothing runs
+With Autonomy off, each session sits at the agent's normal approval prompt — nothing runs
 unattended. Close the windows when done.
 
 > If a hotkey does nothing, another app already owns that combination. The tray app shows
@@ -290,10 +291,11 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\steroids-scratch\אתר ש
 
 On your scratch folder:
 
-- [ ] **Steroids Mode (9x Grid)** opens **one maximized window with nine panes**
-- [ ] **All nine are the same size**, in three equal columns of three. This is the one to look at hardest: the grid used to be built by walking the focus from column to column, which came out wrong whenever the machine was busy enough for the terminal to fall behind — and nine agents starting at once is exactly that. A column left full height beside a column split too many times is the failure. Try it a few times, and on a loaded machine
-- [ ] Every pane is in the right folder
-- [ ] Set Grid to `2 x 2` in Settings, click it again → **four** panes
+- [ ] **Steroids Mode (9x Grid)** opens **nine separate windows**, tiled three by three
+- [ ] **They really are separate windows.** This is the one to look at hardest, because a pane grid draws the same picture. Drag one by its title bar — it should come away on its own. Close one with its **×** — the other eight should stay exactly where they are. Maximize one, then restore it. None of that was possible when the grid was one window split into nine panes, and that is the whole reason this changed
+- [ ] **All nine are the same size**, in three equal columns of three, filling the screen right up to the taskbar with no strip of wallpaper down the side. Try it a few times, and on a loaded machine: windows are placed as they appear, and a slow one taking its cell late is the failure to watch for
+- [ ] Every window is in the right folder
+- [ ] Set Grid to `2 x 2` in Settings, click it again → **four** windows
 
 ### 5. Arrange and close
 
@@ -393,8 +395,10 @@ Not bugs — no need to report these:
   that fallback is what located the CLI.
 - **A hotkey may be dead** if another app claimed the combination first. The tray app says
   so with a balloon tip at startup.
-- **The Steroids grid is panes in one window** on Windows, not nine separate windows as on
-  macOS. That is Windows Terminal's model.
+- **A grid window may settle a fraction of a second after it opens.** Windows Terminal is
+  still sizing itself to your profile when its window first exists, and a window caught
+  mid-way through ignores the first move — so the grid places every window a second time
+  once they are all up. On a loaded machine you can see the last one snap into its cell.
 
 ---
 
