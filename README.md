@@ -79,8 +79,9 @@ running processes?" dialogs nine times in a row. A session that happens to be
 
 **Windows gets the same trio**: a system tray icon next to the clock with the three
 actions and global hotkeys **Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** — Steroids Mode
-there is nine panes in one Windows Terminal window, and Arrange tiles the Windows
-Terminal windows on the current virtual desktop. Starts automatically at every login.
+there opens nine *independent* Windows Terminal windows tiled over the screen, just
+as macOS opens nine Terminal windows, and Arrange retiles the Windows Terminal
+windows on the current virtual desktop. Starts automatically at every login.
 
 > Both run with `--dangerously-skip-permissions`. See the [safety note](#-a-note-on---dangerously-skip-permissions).
 
@@ -152,8 +153,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Then: **right-click any folder** and pick one of the six entries. On Windows 11 they
-live under **“Show more options.”** The Steroids grid is a single Windows Terminal window
-split into nine panes.
+live under **“Show more options.”** The Steroids grid is nine separate Windows Terminal
+windows tiled over the screen — so any one session can be closed, moved to the other
+monitor, or maximized on its own, without touching the other eight.
 
 You'll also get the tray icon (by the clock) and the global hotkeys
 **Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** (to change a combo, edit
@@ -221,13 +223,13 @@ open — so "not on your `PATH`" was, in practice, almost never the real problem
 | OpenAI Codex | `codex --dangerously-bypass-approvals-and-sandbox` | `codex` |
 
 On Windows that line is handed to `powershell -NoLogo -NoExit -Command`, so the
-pane stays open at a PowerShell prompt in the same folder once the agent exits.
+window stays open at a PowerShell prompt in the same folder once the agent exits.
 A single session is centred at about two thirds of the screen width and four
-fifths of its height; the grid maximizes and fills it.
+fifths of its height; every window in a grid gets an equal share of the screen.
 
 Closing a swarm is agent-blind on purpose: **Close ALL Agent Sessions** ends
-Claude *and* Codex panes, so a swarm you started this morning is still yours to
-close after switching agent this afternoon.
+Claude *and* Codex sessions, so a swarm you started this morning is still yours
+to close after switching agent this afternoon.
 
 > **macOS note.** A workflow in `~/Library/Services` is not the same thing as a
 > menu item: macOS keeps a separate on/off switch per service in `pbs.plist`
@@ -259,7 +261,9 @@ close after switching agent this afternoon.
   Space), matches them to Terminal's scriptable windows, and retiles them into a
   `ceil(√n)`-column grid over the visible screen area.
 - **Windows** uses **registry context-menu entries** under `HKCU` that call PowerShell,
-  which drives **Windows Terminal** (`wt.exe`) split-pane commands to build the grid.
+  which opens one **Windows Terminal** (`wt.exe`) window per session and places each in
+  its own cell with Win32 `MoveWindow` — the same arithmetic **Arrange Terminals** uses,
+  so a grid you open and a grid you retile land on the same pixels.
   The tray app is a single C# file (`NotifyIcon` + `RegisterHotKey`) compiled locally
   by the installer and started at login via the `HKCU` Run key. **Arrange Terminals**
   enumerates Windows Terminal windows with Win32 `EnumWindows`, keeps only those on
@@ -324,6 +328,12 @@ Accept it once per folder and you won't see it again.
 **Can I change the grid to 2×2 or 4×4?**
 Yes — the grid math lives in `macos/scripts/steroids-grid.sh` and
 `windows/scripts/steroids-grid.ps1`.
+
+**Can I close just one session out of the nine?**
+Yes, on both platforms — every session in a grid is a window of its own, so closing,
+moving or maximizing one leaves the other eight exactly where they were. On Windows
+this used to be a single window split into nine panes, where the only thing you could
+do was close all nine at once; it is nine windows now.
 
 **How do I close nine Claude sessions without nine confirmation dialogs?**
 Use the menu bar (macOS) or tray (Windows) **Quit** submenu → *Close Terminals on This

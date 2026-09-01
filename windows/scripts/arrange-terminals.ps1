@@ -28,14 +28,18 @@ $area = [SteroidsWin]::WorkArea()
 # Square-ish, wider before taller: 4 -> 2x2, 9 -> 3x3, 10 -> 4x3, 16 -> 4x4.
 $cols = [int][Math]::Ceiling([Math]::Sqrt($n))
 $rows = [int][Math]::Ceiling($n / [double]$cols)
-$cw = [int](($area.Right - $area.Left) / $cols)
-$ch = [int](($area.Bottom - $area.Top) / $rows)
+
+# The same cell arithmetic Steroids Mode lays its own windows out with, so a
+# grid you opened and a grid you retiled land on exactly the same pixels.
+$plan = @(Get-SteroidsGridPlan -Columns $cols -Rows $rows `
+              -Left $area.Left -Top $area.Top `
+              -Width ($area.Right - $area.Left) -Height ($area.Bottom - $area.Top))
 
 for ($i = 0; $i -lt $n; $i++) {
-    $x = $area.Left + ($i % $cols) * $cw
-    $y = $area.Top + [int][Math]::Floor($i / $cols) * $ch
-    if ($PSCmdlet.ShouldProcess("window $($i + 1) of $n", "move to $x,$y (${cw}x${ch})")) {
-        [SteroidsWin]::Place($wins[$i], $x, $y, $cw, $ch)
+    $cell = $plan[$i]
+    if ($PSCmdlet.ShouldProcess("window $($i + 1) of $n",
+            "move to $($cell.X),$($cell.Y) ($($cell.Width)x$($cell.Height))")) {
+        [SteroidsWin]::Place($wins[$i], $cell.X, $cell.Y, $cell.Width, $cell.Height)
     }
 }
 

@@ -196,102 +196,71 @@ Section 'Grid construction'
 # ===========================================================================
 $gridScript = Join-Path $scriptsDir 'steroids-grid.ps1'
 
+function Get-GridPlan {
+    param([int]$Columns = 3, [int]$Rows = 3, [string]$Dir = $env:USERPROFILE)
+    return @(& $gridScript -Dir $Dir -Columns $Columns -Rows $Rows -DryRun)[0]
+}
+
 function Get-GridArgs {
     param([int]$Columns = 3, [int]$Rows = 3, [string]$Dir = $env:USERPROFILE)
-    return @(& $gridScript -Dir $Dir -Columns $Columns -Rows $Rows -DryRun)
+    return @((Get-GridPlan -Columns $Columns -Rows $Rows -Dir $Dir).Arguments)
 }
 
-Test-Case 'the default grid builds exactly nine panes' {
-    $a = Get-GridArgs
-    $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count + @($a | Where-Object { $_ -eq 'new-tab' }).Count
-    Assert-Equal 9 $panes 'pane count'
+# The whole point of this section: a session must be a WINDOW. The grid used to
+# be one maximized window split into panes, which draws the same picture and is
+# a different product -- a pane cannot be closed on its own, moved to the other
+# monitor, or maximized to read, so nine sessions were nine things you could
+# only ever be rid of together. macOS never had that problem, because there a
+# session has always been a window.
+Test-Case 'a session is a window of its own, never a pane' {
+    foreach ($case in @(@(3, 3), @(2, 2), @(4, 3), @(1, 1))) {
+        $a = Get-GridArgs -Columns $case[0] -Rows $case[1]
+        foreach ($banned in @('split-pane', 'focus-pane', 'move-focus', '--size')) {
+            Assert-True ($a -notcontains $banned) "$banned came back ($($case[0])x$($case[1]))"
+        }
+        Assert-Equal 1 (@($a | Where-Object { $_ -eq 'new-tab' }).Count) 'one tab per window'
+    }
 }
 
-Test-Case 'pane count tracks Columns x Rows' {
+Test-Case 'the grid opens one window per cell, tracking Columns x Rows' {
+    Assert-Equal 9 (Get-GridPlan).Sessions 'the default grid'
     foreach ($case in @(@(2, 2, 4), @(4, 4, 16), @(1, 1, 1), @(3, 2, 6))) {
-        $a = Get-GridArgs -Columns $case[0] -Rows $case[1]
-        $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count + @($a | Where-Object { $_ -eq 'new-tab' }).Count
-        Assert-Equal $case[2] $panes "$($case[0])x$($case[1])"
+        $plan = Get-GridPlan -Columns $case[0] -Rows $case[1]
+        Assert-Equal $case[2] $plan.Sessions "$($case[0])x$($case[1])"
+        Assert-Equal $case[0] $plan.Columns 'columns'
+        Assert-Equal $case[1] $plan.Rows    'rows'
     }
 }
 
-Test-Case 'every pane runs Claude in the requested folder' {
+Test-Case 'every session runs Claude in the requested folder' {
     $a = Get-GridArgs
-    Assert-Equal 9 (@($a | Where-Object { $_ -eq $env:USERPROFILE }).Count) '-d arguments'
-    Assert-Equal 9 (@($a | Where-Object { $_ -like 'claude *' }).Count) 'claude commands'
-    Assert-True ($a -contains '--dangerously-skip-permissions' -or
-                 (@($a | Where-Object { $_ -like '*--dangerously-skip-permissions*' }).Count -eq 9)) 'YOLO flag present'
+    Assert-Equal 1 (@($a | Where-Object { $_ -eq $env:USERPROFILE }).Count) '-d argument'
+    Assert-Equal 1 (@($a | Where-Object { $_ -like 'claude *' }).Count) 'claude command'
+    Assert-True (@($a | Where-Object { $_ -like '*--dangerously-skip-permissions*' }).Count -eq 1) 'YOLO flag present'
 }
 
-Test-Case 'the window is maximized and always brand new' {
+Test-Case 'every session asks for a brand-new window, and is not maximized' {
     $a = Get-GridArgs
-    Assert-True ($a -contains '-M') 'missing -M, so nine panes would be crammed into a default-sized window'
-    Assert-True ($a -contains 'new') 'missing -w new, so the grid could hijack the terminal you are working in'
     Assert-Equal '-w' $a[0] 'window argument must lead'
+    Assert-True ($a -contains 'new') 'missing -w new, so a Terminal set to reuse windows would collect the grid as tabs'
+    # -M was how the single-window grid filled the screen. Nine maximized
+    # windows would sit on top of one another; the grid places its own cells.
+    Assert-True ($a -notcontains '-M') '-M came back, so every window would cover the whole screen'
 }
 
-Test-Case 'split sizes use an invariant decimal point' {
-    # wt only accepts 0.6667. On a comma-decimal locale a culture-sensitive
-    # format would emit 0,6667 and every split would be rejected.
-    $a = Get-GridArgs
-    $sizes = @()
-    for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -eq '--size') { $sizes += $a[$i + 1] } }
-    Assert-True ($sizes.Count -gt 0) 'no --size arguments found'
-    foreach ($s in $sizes) {
-        Assert-True ($s -notmatch ',') "size '$s' used a comma"
-        Assert-True ($s -match '^0\.\d+$') "size '$s' is not an invariant fraction"
-    }
-}
-
-Test-Case 'split sizes are the fractions that make equal columns' {
-    $a = Get-GridArgs -Columns 3 -Rows 1
-    $sizes = @()
-    for ($i = 0; $i -lt $a.Count; $i++) { if ($a[$i] -eq '--size') { $sizes += $a[$i + 1] } }
-    Assert-Equal '0.6667' $sizes[0] 'first vertical split'
-    Assert-Equal '0.5'    $sizes[1] 'second vertical split'
-}
-
-Test-Case 'the grid names the pane to split instead of walking to it' {
-    # move-focus described a route through the layout, and was only right if
-    # every split had already landed. Under nine simultaneous agent startups it
-    # was not: the terminal fell behind the command list and whole columns came
-    # out unsplit while others were split twice over. focus-pane takes an index
-    # in creation order, which cannot go stale.
-    foreach ($case in @(@(3, 3), @(2, 2), @(4, 3), @(1, 4))) {
-        $a = Get-GridArgs -Columns $case[0] -Rows $case[1]
-        Assert-True ($a -notcontains 'move-focus') 'a focus walk came back'
-
-        $targets = @()
-        for ($i = 0; $i -lt $a.Count; $i++) {
-            if ($a[$i] -eq 'focus-pane') {
-                Assert-Equal '--target' $a[$i + 1] 'focus-pane must address a pane by index'
-                $targets += [int]$a[$i + 2]
-            }
-        }
-        # One per column, and the columns are numbered left to right because
-        # every vertical split puts its new pane on the right.
-        Assert-Equal $case[0] $targets.Count "one focus-pane per column ($($case[0])x$($case[1]))"
-        Assert-Equal (0..($case[0] - 1) -join ',') ($targets -join ',') 'column indices'
-    }
-}
-
-Test-Case 'splitting a column never renumbers the others' {
-    # The whole scheme rests on this: rows are appended to the end of the
-    # numbering, so column 2 is still index 1 after column 1 has grown rows.
-    # Every focus-pane target must therefore be below the column count.
-    $a = Get-GridArgs -Columns 3 -Rows 3
-    for ($i = 0; $i -lt $a.Count; $i++) {
-        if ($a[$i] -eq 'focus-pane') {
-            Assert-True ([int]$a[$i + 2] -lt 3) "target $($a[$i + 2]) is not one of the three columns"
-        }
-    }
-}
-
-Test-Case 'a single session opens one pane in a new window' {
+Test-Case 'a single session opens one tab in a new window' {
     $a = @(& (Join-Path $scriptsDir 'open-in-claude.ps1') -Dir $env:USERPROFILE -DryRun)
     Assert-Equal 1 (@($a | Where-Object { $_ -eq 'new-tab' }).Count) 'one tab'
     Assert-True ($a -notcontains 'split-pane') 'no splits'
     Assert-True ($a -contains 'new') 'new window'
+}
+
+Test-Case 'a session in the grid and a single session run the same command line' {
+    # They differ only in where the window lands. If these ever drift apart, one
+    # of the two entry points is quietly running something else.
+    $single = @(& (Join-Path $scriptsDir 'open-in-claude.ps1') -Dir $env:USERPROFILE -DryRun)
+    $grid   = Get-GridArgs
+    Assert-Equal ($single -join '|') ($grid -join '|') 'the two launch paths diverged'
 }
 
 # ===========================================================================
@@ -312,9 +281,23 @@ $openScript = Join-Path $scriptsDir 'open-in-claude.ps1'
 function Get-PaneCommandFrom {
     param([string]$Script, [string]$AgentId)
 
-    $a = if ($AgentId) { @(& $Script -Dir $env:USERPROFILE -Agent $AgentId -DryRun 3>$null) }
-         else          { @(& $Script -Dir $env:USERPROFILE -DryRun 3>$null) }
-    # The pane command is the last argument of every launch: cmd, /k, the line.
+    $out = if ($AgentId) { & $Script -Dir $env:USERPROFILE -Agent $AgentId -DryRun 3>$null }
+           else          { & $Script -Dir $env:USERPROFILE -DryRun 3>$null }
+
+    # open-in-claude hands back the command line itself; the grid hands back a
+    # plan that carries one, because it also has a shape to report. Either way
+    # what follows wants the arguments.
+    #
+    # Told apart by type, deliberately. Wrapping the call in @() and testing the
+    # count does not work: a single object returned into the pipeline arrives
+    # unwrapped, and asking a one-element array for .Count answers with the
+    # contained object's Count property when it has one -- two ways to read the
+    # same expression, both of which quietly gave the whole plan object here
+    # where a command line was wanted.
+    $a = if ($out -is [array]) { @($out) } else { @($out.Arguments) }
+
+    # The agent command is the last argument of every launch: the host, its
+    # switches, then the line.
     return [string]$a[-1]
 }
 
@@ -529,11 +512,13 @@ Test-Case 'non-ASCII folder names survive the trip to wt.exe' {
 }
 
 Test-Case 'the real grid command line round-trips argument for argument' {
-    $args9 = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
-    $line  = ConvertTo-WtCommandLine $args9
-    $got   = @([SteroidsWin]::ParseCommandLine('prog.exe ' + $line) | Select-Object -Skip 1)
-    Assert-Equal $args9.Count $got.Count 'the nine-pane command line changed shape in transit'
-    Assert-Equal 9 (@($got | Where-Object { $_ -eq 'claude --dangerously-skip-permissions' }).Count) 'pane commands'
+    # Every window in the grid is launched with this one command line, so a
+    # quoting fault here is a fault nine times over.
+    $sessionArgs = Get-GridArgs
+    $line = ConvertTo-WtCommandLine $sessionArgs
+    $got  = @([SteroidsWin]::ParseCommandLine('prog.exe ' + $line) | Select-Object -Skip 1)
+    Assert-Equal $sessionArgs.Count $got.Count 'the command line changed shape in transit'
+    Assert-Equal 1 (@($got | Where-Object { $_ -eq 'claude --dangerously-skip-permissions' }).Count) 'agent command'
 }
 
 # ===========================================================================
@@ -704,6 +689,71 @@ Test-Case 'window counts map to the documented grid shapes' {
     Assert-Equal '4x3' (Get-GridShape 10) 'ten windows'
     Assert-Equal '4x4' (Get-GridShape 16) 'sixteen windows'
     Assert-Equal '2x2' (Get-GridShape 3)  'three windows'
+}
+
+# Get-SteroidsGridPlan is the arithmetic behind both Steroids Mode and Arrange
+# Terminals, so a grid you open and a grid you retile land on the same pixels.
+# 1920x1080 over three columns is 640 each; 1050 over four rows is not divisible
+# at all, which is the case that matters.
+$planCases = @(
+    @{ Cols = 3; Rows = 3; Left = 0;   Top = 0;  Width = 1920; Height = 1080 },
+    @{ Cols = 4; Rows = 4; Left = 0;   Top = 0;  Width = 1920; Height = 1050 },
+    @{ Cols = 3; Rows = 2; Left = -37; Top = 61; Width = 1279; Height = 719  },
+    @{ Cols = 1; Rows = 1; Left = 0;   Top = 0;  Width = 800;  Height = 600  }
+)
+
+Test-Case 'cells fill the rectangle exactly, leaving no strip of desktop behind' {
+    # The bug this rules out: rounding a cell width once and adding it n times
+    # stops short of the far edge, so a grid on any screen that does not divide
+    # evenly shows a sliver of wallpaper down the right-hand side.
+    foreach ($c in $planCases) {
+        $plan = @(Get-SteroidsGridPlan -Columns $c.Cols -Rows $c.Rows `
+                      -Left $c.Left -Top $c.Top -Width $c.Width -Height $c.Height)
+        $label = "$($c.Cols)x$($c.Rows) over $($c.Width)x$($c.Height)"
+
+        Assert-Equal ($c.Cols * $c.Rows) $plan.Count "cell count ($label)"
+        Assert-Equal $c.Left $plan[0].X "left edge ($label)"
+        Assert-Equal $c.Top  $plan[0].Y "top edge ($label)"
+
+        $last = $plan[-1]
+        Assert-Equal ($c.Left + $c.Width)  ($last.X + $last.Width)  "right edge ($label)"
+        Assert-Equal ($c.Top  + $c.Height) ($last.Y + $last.Height) "bottom edge ($label)"
+
+        # Every cell touches its neighbours: the row above ends where this one
+        # begins, and so does the column to the left.
+        foreach ($cell in $plan) {
+            if ($cell.Column -gt 0) {
+                $left = $plan[$cell.Index - 1]
+                Assert-Equal ($left.X + $left.Width) $cell.X "column seam at $($cell.Index) ($label)"
+            }
+            if ($cell.Row -gt 0) {
+                $above = $plan[$cell.Index - $c.Cols]
+                Assert-Equal ($above.Y + $above.Height) $cell.Y "row seam at $($cell.Index) ($label)"
+            }
+        }
+    }
+}
+
+Test-Case 'cells are the same size to within a pixel' {
+    foreach ($c in $planCases) {
+        $plan = @(Get-SteroidsGridPlan -Columns $c.Cols -Rows $c.Rows `
+                      -Left $c.Left -Top $c.Top -Width $c.Width -Height $c.Height)
+        $label = "$($c.Cols)x$($c.Rows) over $($c.Width)x$($c.Height)"
+
+        $widths  = @($plan | ForEach-Object { $_.Width })
+        $heights = @($plan | ForEach-Object { $_.Height })
+        Assert-True ((($widths  | Measure-Object -Maximum).Maximum -
+                      ($widths  | Measure-Object -Minimum).Minimum) -le 1) "widths differ ($label)"
+        Assert-True ((($heights | Measure-Object -Maximum).Maximum -
+                      ($heights | Measure-Object -Minimum).Minimum) -le 1) "heights differ ($label)"
+    }
+}
+
+Test-Case 'cells run left to right, then top to bottom' {
+    $plan = @(Get-SteroidsGridPlan -Columns 3 -Rows 2 -Left 0 -Top 0 -Width 900 -Height 600)
+    Assert-Equal '0,0 1,0 2,0 0,1 1,1 2,1' (($plan | ForEach-Object { "$($_.Column),$($_.Row)" }) -join ' ') 'reading order'
+    Assert-Equal 300 $plan[0].Width  'cell width'
+    Assert-Equal 300 $plan[0].Height 'cell height'
 }
 
 # ===========================================================================
@@ -968,26 +1018,32 @@ if ($IncludeLive) {
         return @{ Count = (Get-ProbeCount); Trace = $seen }
     }
 
-    Test-Case 'a nine-pane grid really opens, and really is nine panes' {
+    Test-Case 'a nine-session grid really opens nine independent windows, tiled' {
+        # The regression this exists for: Steroids Mode used to be one maximized
+        # window split into nine panes. A process count alone cannot tell that
+        # apart from nine windows -- both give nine shells -- so this counts
+        # WINDOWS, and then checks they are laid out side by side rather than
+        # stacked on the same spot.
         Stop-Probes
-        $a = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
-        # Swap the agent command for the probe, keeping the layout identical.
-        # Matched against whatever Get-AgentPaneCommand currently emits rather
-        # than against a hardcoded 'cmd', '/k' -- the pane host has changed once
-        # already and this loop silently substituted nothing when it did.
-        $paneBlock = @(Get-AgentPaneCommand ([pscustomobject]@{ Agent = 'claude'; Yolo = $true }))
-        $live = @(); $i = 0
-        while ($i -lt $a.Count) {
-            if ($a[$i] -eq $paneBlock[0] -and $a[$i + 1] -eq $paneBlock[1]) {
-                $live += $probe; $i += $paneBlock.Count
-            } else { $live += $a[$i]; $i++ }
-        }
-        Assert-Equal 9 (@($live | Where-Object { $_ -like "prompt $marker*" }).Count) 'probe substitution'
 
-        Start-WindowsTerminal $live
-        $result = Wait-ForProbes -Expected 9
+        # Start-SteroidsGrid is the real launch loop, driven with a harmless
+        # probe instead of nine agents. It is what steroids-grid.ps1 calls, with
+        # the arguments a single right-click would run.
+        $handles = @(Start-SteroidsGrid -Arguments $titledProbe -Columns 3 -Rows 3)
+
+        $probes  = Wait-ForProbes -Expected 9
+        [void](Wait-ForProbeWindow -Expected 9)
+        $windows = @(Get-ProbeWindow)
+        $corners = @($windows |
+                     ForEach-Object { $b = [SteroidsWin]::Bounds($_); "$($b.Left),$($b.Top)" } |
+                     Sort-Object -Unique)
+
         Stop-Probes
-        Assert-Equal 9 $result.Count "panes actually created (observed over time: $($result.Trace -join ','))"
+
+        Assert-Equal 9 $probes.Count "sessions actually started (observed over time: $($probes.Trace -join ','))"
+        Assert-Equal 9 $windows.Count 'independent windows on screen - a pane grid would give one'
+        Assert-Equal 9 $handles.Count 'windows the grid claimed as its own'
+        Assert-Equal 9 $corners.Count "windows landed on top of each other instead of tiling: $($corners -join ' ')"
     }
 
     Test-Case 'a pane really opens in a folder whose name needs quoting' {
@@ -1246,7 +1302,7 @@ Test-Case 'each agent contributes its own flag, and only when YOLO is on' {
     foreach ($c in @($claudeOn, $codexOff)) {
         Assert-Equal 'powershell' $c[0] 'pane host'
         Assert-True ($c -contains '-NoExit') 'without -NoExit the pane dies with the agent'
-        Assert-True ($c -contains '-NoLogo') 'the banner would eat the top of a grid pane'
+        Assert-True ($c -contains '-NoLogo') 'the banner would eat the top of a grid window'
         Assert-Equal '-Command' $c[-2] 'the agent line must be what -Command receives'
         Assert-Equal 5 $c.Count 'argument count'
     }
@@ -1265,10 +1321,10 @@ Test-Case 'the grid script honours the configured size when none is passed' {
         '{ "agent": "claude", "columns": 2, "rows": 2, "yolo": true }' |
             Set-Content -LiteralPath $path -Encoding UTF8
         $env:STEROIDS_CONFIG = $path
-        $a = @(& $gridScript -Dir $env:USERPROFILE -DryRun)
-        $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count +
-                 @($a | Where-Object { $_ -eq 'new-tab' }).Count
-        Assert-Equal 4 $panes 'pane count came from the settings file'
+        $plan = @(& $gridScript -Dir $env:USERPROFILE -DryRun)[0]
+        Assert-Equal 4 $plan.Sessions 'session count came from the settings file'
+        Assert-Equal 2 $plan.Columns 'columns came from the settings file'
+        Assert-Equal 2 $plan.Rows    'rows came from the settings file'
     } finally {
         $env:STEROIDS_CONFIG = $previous
         Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
@@ -1276,10 +1332,10 @@ Test-Case 'the grid script honours the configured size when none is passed' {
 }
 
 Test-Case 'an explicit -Columns still overrides the settings file' {
-    $a = @(& $gridScript -Dir $env:USERPROFILE -Columns 4 -Rows 1 -DryRun)
-    $panes = @($a | Where-Object { $_ -eq 'split-pane' }).Count +
-             @($a | Where-Object { $_ -eq 'new-tab' }).Count
-    Assert-Equal 4 $panes 'pane count'
+    $plan = @(& $gridScript -Dir $env:USERPROFILE -Columns 4 -Rows 1 -DryRun)[0]
+    Assert-Equal 4 $plan.Sessions   'session count'
+    Assert-Equal 4 $plan.Columns 'columns'
+    Assert-Equal 1 $plan.Rows    'rows'
 }
 
 # ===========================================================================

@@ -3,7 +3,7 @@
 // also bound to a global hotkey (RegisterHotKey — works from any app):
 //
 //   Ctrl+Alt+C  New Session        (one Windows Terminal window, in %USERPROFILE%)
-//   Ctrl+Alt+S  Steroids Mode      (a grid of panes in one maximized window, in %USERPROFILE%)
+//   Ctrl+Alt+S  Steroids Mode      (a tiled grid of independent windows, in %USERPROFILE%)
 //   Ctrl+Alt+T  Arrange Terminals  (retile this virtual desktop's Terminal windows)
 //
 // Which agent those sessions run - Claude Code or OpenAI Codex - is a setting,
@@ -11,8 +11,8 @@
 // %APPDATA%\claude-code-steroids\config.json; the scripts read the same file,
 // so one switch there changes every entry point at once.
 //
-// The Quit submenu tears a swarm back down: it ends the pane processes first, so
-// Terminal retires the panes without ever asking "close all panes?".
+// The Quit submenu tears a swarm back down: it ends each session's shell first, so
+// Terminal retires the window without ever asking "close all panes?".
 //
 // Compiled at install time by install.ps1 (csc.exe, ships with Windows) and
 // started at login via HKCU\...\Run. To change a combo: edit the Combos table
@@ -119,9 +119,9 @@ class SteroidsTray : Form
     void Retitle()
     {
         string label = ConfigValue("agent", "claude") == "codex" ? "OpenAI Codex" : "Claude Code";
-        int panes = ConfigInt("columns", 3) * ConfigInt("rows", 3);
+        int sessions = ConfigInt("columns", 3) * ConfigInt("rows", 3);
         sessionItem.Text  = "New Session - " + label;
-        steroidsItem.Text = "Steroids Mode - " + panes + "x " + label;
+        steroidsItem.Text = "Steroids Mode - " + sessions + "x " + label;
         trayIcon.Text = "Claude Code - Steroids (" + label + ")";
     }
 
