@@ -264,6 +264,123 @@ Test-Case 'a session in the grid and a single session run the same command line'
 }
 
 # ===========================================================================
+Section 'Tray menu - the per-agent grid picker'
+# ===========================================================================
+# The tray menu leads with a block per agent: "New Session - <agent>" and a
+# "Steroids Mode - <agent>" submenu of grid shapes. Picking one is a one-run
+# override -- it pins agent and shape on the command line and never touches the
+# settings file, so the hotkey keeps launching whatever Settings says.
+#
+# The submenu must offer exactly the shapes the Settings dropdown offers, and
+# there is no way to share the list: Settings is PowerShell, the tray is a C#
+# exe compiled at install time. So the two tables are held side by side here. A
+# shape added to one and forgotten in the other is a menu that disagrees with
+# Settings, and nothing else would notice.
+$trayScript = Join-Path $scriptsDir 'steroids-tray.cs'
+$traySource = Get-Content -LiteralPath $trayScript -Raw
+
+function Get-TrayTableRow {
+    param([string]$Declaration, [string]$RowPattern)
+
+    if ($traySource -notmatch ([regex]::Escape($Declaration) + '(?<body>[\s\S]*?)\};')) {
+        throw "could not find '$Declaration' in steroids-tray.cs"
+    }
+    return [regex]::Matches($matches['body'], $RowPattern)
+}
+
+Test-Case 'the tray offers exactly the grid shapes Settings does' {
+    $rows = Get-TrayTableRow 'GridShapes = new int[][] {' 'new int\[\]\s*\{\s*(\d+)\s*,\s*(\d+)\s*\}'
+    $tray = @($rows | ForEach-Object { '{0}x{1}' -f $_.Groups[1].Value, $_.Groups[2].Value })
+    $ps   = @(Get-SteroidsGridChoice | ForEach-Object { '{0}x{1}' -f $_.Columns, $_.Rows })
+    Assert-True ($ps.Count -gt 0) 'no grid shapes on the PowerShell side'
+    Assert-Equal ($ps -join ' ') ($tray -join ' ') 'the two grid tables have drifted apart'
+}
+
+Test-Case 'the tray names exactly the agents the scripts know' {
+    $rows = Get-TrayTableRow 'Agents = new string[][] {' 'new string\[\]\s*\{\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\}'
+    $tray = @($rows | ForEach-Object { '{0}={1}' -f $_.Groups[1].Value, $_.Groups[2].Value })
+    $ps   = @($script:SteroidsAgents | ForEach-Object { '{0}={1}' -f $_.Id, $_.Label })
+    Assert-True ($ps.Count -gt 0) 'no agents on the PowerShell side'
+    Assert-Equal ($ps -join ' ') ($tray -join ' ') 'the two agent tables have drifted apart'
+}
+
+Test-Case 'a submenu row spells a shape the way Settings spells it' {
+    # The label is built twice, once in each language. If the C# stops matching
+    # Get-SteroidsGridLabel, one grid reads two different ways in two menus.
+    Assert-Equal '3 x 3  -  9 sessions'  (Get-SteroidsGridLabel 3 3) 'the PowerShell label'
+    Assert-Equal '4 x 3  -  12 sessions' (Get-SteroidsGridLabel 4 3) 'a non-square label'
+
+    if ($traySource -notmatch 'static string GridLabel[\s\S]*?return (?<expr>[^;]+);') {
+        throw 'could not find GridLabel in steroids-tray.cs'
+    }
+    foreach ($piece in @('" x "', '"  -  "', '" sessions"')) {
+        Assert-True ($matches['expr'] -like "*$piece*") "GridLabel no longer builds $piece"
+    }
+}
+
+Test-Case 'a submenu row pins both the agent and the shape' {
+    # It must override both. Pinning only the shape would open 4 x 3 of whatever
+    # agent Settings names, from a row sitting under the other agent's heading.
+    Assert-True ($traySource -match '"-Agent " \+ agentId \+ " -Columns " \+ g\[0\] \+ " -Rows " \+ g\[1\]') `
+        'the submenu no longer pins agent and shape together'
+}
+
+Test-Case 'the hotkeys pass no arguments, so they follow Settings' {
+    # This is what makes the check mark in the submenu honest: the hotkey is the
+    # one launch that takes its shape from the settings file.
+    if ($traySource -notmatch 'Combos = new object\[\]\[\] \{(?<body>[\s\S]*?)\};') {
+        throw 'could not find the Combos table in steroids-tray.cs'
+    }
+    $rows = [regex]::Matches($matches['body'], '"(?<script>[^"]+\.ps1)",\s*"(?<args>[^"]*)"')
+    Assert-Equal 3 $rows.Count 'expected three hotkey combos'
+    foreach ($m in $rows) {
+        Assert-Equal '' $m.Groups['args'].Value "the $($m.Groups['script'].Value) hotkey passes arguments"
+    }
+}
+
+Test-Case 'a submenu pick overrides the shape for one run and leaves the file alone' {
+    $path = Join-Path $env:TEMP ('steroids-cfg-pick-' + [guid]::NewGuid().ToString('N') + '.json')
+    $previous = $env:STEROIDS_CONFIG
+    try {
+        '{ "agent": "claude", "columns": 3, "rows": 3, "yolo": true }' |
+            Set-Content -LiteralPath $path -Encoding UTF8
+        $env:STEROIDS_CONFIG = $path
+        $before = Get-Content -LiteralPath $path -Raw
+
+        # Exactly what a click on "4 x 3" under Codex runs.
+        $plan = @(& $gridScript -Dir $env:USERPROFILE -Agent codex -Columns 4 -Rows 3 -DryRun 3>$null)[0]
+        Assert-Equal 4  $plan.Columns  'columns came from the pick'
+        Assert-Equal 3  $plan.Rows     'rows came from the pick'
+        Assert-Equal 12 $plan.Sessions 'session count'
+        Assert-True ([string]$plan.Arguments[-1] -match 'codex') `
+            "the pinned agent is missing from: $($plan.Arguments[-1])"
+
+        Assert-Equal $before (Get-Content -LiteralPath $path -Raw) 'a one-run pick rewrote the settings file'
+    } finally {
+        $env:STEROIDS_CONFIG = $previous
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case 'a shape outside 1..8 falls back to Settings instead of failing' {
+    # A bad shape can only come from our own menu, so it is our bug. It used to
+    # be a [ValidateRange], which turns that bug into a menu click that silently
+    # does nothing at all -- these scripts run with -WindowStyle Hidden, where a
+    # parameter-binding error has nowhere to be seen. Ignored, not clamped:
+    # 9 columns quietly becoming 8 is a grid nobody asked for.
+    foreach ($bad in @(0, 9, -1, 99)) {
+        $plan = @(& $gridScript -Dir $env:USERPROFILE -Columns $bad -Rows $bad -DryRun 3>$null)[0]
+        Assert-Equal 3 $plan.Columns "columns from $bad"
+        Assert-Equal 3 $plan.Rows    "rows from $bad"
+    }
+}
+
+Test-Case 'Resolve-SteroidsGridDimension keeps what it is given only inside 1..8' {
+    foreach ($n in 1..8) { Assert-Equal $n (Resolve-SteroidsGridDimension $n 3) "in range: $n" }
+    foreach ($n in @(0, 9, -1, 1000)) { Assert-Equal 3 (Resolve-SteroidsGridDimension $n 3) "out of range: $n" }
+}
+
+# ===========================================================================
 Section 'Launching — what a right-click actually runs'
 # ===========================================================================
 # The gap that let the launch break completely: every grid test above calls the

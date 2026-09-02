@@ -94,6 +94,7 @@ Add-FolderMenu 'CodexSteroids'  'Open in Codex — Steroids (9x)'  'steroids-gri
 # One lean exe compiled locally with the csc.exe that ships with Windows,
 # started at login via the HKCU Run key.
 $trayInstalled = $false
+$trayStartError = $null
 if (-not $NoTray) {
     $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     if (-not (Test-Path $csc)) {
@@ -135,8 +136,26 @@ if (-not $NoTray) {
         } else {
             Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
                 -Name 'ClaudeSteroidsTray' -Value "`"$exe`""
-            Start-Process $exe
             $trayInstalled = $true
+
+            # Starting it can fail where compiling it did not. Windows 11's
+            # Smart App Control blocks an executable it has no reputation for,
+            # and one compiled thirty seconds ago is by definition one it has
+            # never seen -- so the first launch after an install is exactly the
+            # launch it stops. It lets the same file through once its cloud
+            # check comes back, which is why the answer below is "try again"
+            # rather than "this is broken".
+            #
+            # Caught for the same reason the csc call above drops
+            # $ErrorActionPreference: everything is registered by this point,
+            # and an unhandled throw here would abandon the run with a stack
+            # trace in place of the report, leaving an install that is complete
+            # and looks failed.
+            try {
+                Start-Process $exe -ErrorAction Stop
+            } catch {
+                $trayStartError = $_.Exception.Message
+            }
         }
     } else {
         Write-Host 'csc.exe not found - skipping the tray app and hotkeys.' -ForegroundColor Yellow
@@ -157,6 +176,20 @@ if ($trayInstalled) {
     Write-Host '  Ctrl+Alt+T  Arrange Terminals (grid: 4 -> 2x2, 9 -> 3x3, 10 -> 4x3 ...)'
     Write-Host "The tray menu's Quit submenu closes a swarm again, without confirmation dialogs."
     Write-Host 'The tray app starts automatically at every login.'
+    Write-Host 'Each agent has a Steroids Mode submenu - pick 2x2 through 4x4 to open that'
+    Write-Host 'grid once, without changing the default the hotkey uses.'
+}
+
+if ($trayStartError) {
+    Write-Host ''
+    Write-Host 'The tray app is installed but would not start:' -ForegroundColor Yellow
+    Write-Host "  $trayStartError" -ForegroundColor DarkYellow
+    Write-Host 'If that mentions an Application Control or Device Guard policy, it is'
+    Write-Host 'Windows 11 Smart App Control refusing an executable it has never seen.'
+    Write-Host 'It usually allows the same file a minute later. Start it by hand with:'
+    Write-Host "  Start-Process `"$exe`""
+    Write-Host 'Everything else is installed either way - the right-click menu works now,'
+    Write-Host 'and the tray app is registered to start at your next login.'
 }
 
 Write-Host ''
