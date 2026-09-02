@@ -77,11 +77,13 @@ running processes first, so macOS never interrupts you with "Do you want to term
 running processes?" dialogs nine times in a row. A session that happens to be
 **updating Claude** is left open on purpose — see the FAQ.
 
-**Windows gets the same trio**: a system tray icon next to the clock with the three
-actions and global hotkeys **Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** — Steroids Mode
-there opens nine *independent* Windows Terminal windows tiled over the screen, just
-as macOS opens nine Terminal windows, and Arrange retiles the Windows Terminal
-windows on the current virtual desktop. Starts automatically at every login.
+**Windows gets the same menu**: a system tray icon next to the clock, with the same
+block per agent — *New Session* and a **Steroids Mode** submenu of the same shapes,
+the selected agent first, the configured grid checked — and the same global hotkeys
+**Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T**. Steroids Mode there opens nine
+*independent* Windows Terminal windows tiled over the screen, just as macOS opens
+nine Terminal windows, and Arrange retiles the Windows Terminal windows on the
+current virtual desktop. Starts automatically at every login.
 
 > Both run with `--dangerously-skip-permissions`. See the [safety note](#-a-note-on---dangerously-skip-permissions).
 
@@ -159,7 +161,30 @@ monitor, or maximized on its own, without touching the other eight.
 
 You'll also get the tray icon (by the clock) and the global hotkeys
 **Ctrl+Alt+C / Ctrl+Alt+S / Ctrl+Alt+T** (to change a combo, edit
-`windows/scripts/steroids-tray.cs` and re-run the installer).
+`windows/scripts/steroids-tray.cs` and re-run the installer). The tray menu carries
+the same per-agent block as the macOS menu bar:
+
+```
+   New Session - Claude Code            Ctrl+Alt+C
+   Steroids Mode - Claude Code        ▸ │ 2 x 2  -  4 sessions
+                                        │ 3 x 2  -  6 sessions
+                                        │ 3 x 3  -  9 sessions  ✓  Ctrl+Alt+S
+                                        │ 4 x 3  -  12 sessions
+                                        │ 4 x 4  -  16 sessions
+   ─────────────────────────────────
+   New Session - OpenAI Codex
+   Steroids Mode - OpenAI Codex       ▸ │ 2 x 2 … 4 x 4
+   ─────────────────────────────────
+   Arrange Terminals                    Ctrl+Alt+T
+```
+
+Click *4 x 3* under Codex and twelve Codex sessions open, whatever Settings says —
+the pick is a one-off and never rewrites your defaults.
+
+> Windows 11's **Smart App Control** blocks executables it has no reputation for,
+> and the tray app is compiled on your machine at install time — so it can refuse
+> the very first launch. The installer says so and carries on; the same file is
+> usually allowed a minute later, and at your next login regardless.
 
 No administrator rights are needed — everything is written under your user (`HKCU`),
 and the tray app is compiled locally with the `csc.exe` that ships with Windows.
@@ -179,7 +204,7 @@ hotkey press already uses the new value.
 | | |
 |---|---|
 | **Agent** | **Claude Code** or **OpenAI Codex**. A live ✓ shows the path it resolved to, or a ✗ with the one-line install command if the CLI isn't there yet. |
-| **Grid** | 2×2 through 4×4 — the default for the ⌃⌥S hotkey and the right-click grid entries. The file accepts anything up to 8×8 if you'd rather type it. The menu bar's **Steroids Mode ▸** submenu offers the same shapes as one-off picks that leave this default alone. |
+| **Grid** | 2×2 through 4×4 — the default for the ⌃⌥S / Ctrl+Alt+S hotkey and the right-click grid entries. The file accepts anything up to 8×8 if you'd rather type it. The menu bar's and the tray's **Steroids Mode** submenus offer the same shapes as one-off picks that leave this default alone; a shape you typed into the file yourself is listed there too, first and checked. |
 | **Autonomy** | *Skip approval prompts*, on or off. **Off passes no flag at all**, so each CLI behaves exactly as it does when you run it yourself. |
 
 The choice reaches the hotkeys, the menu/tray items, and the two **neutral**

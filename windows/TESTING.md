@@ -109,6 +109,7 @@ What it covers, and why each section exists:
 | **Command-line quoting** | Built by hand and checked against Windows' own `CommandLineToArgvW`, not against a second reading of the rules. Includes a drive root with a pinned agent, and non-ASCII folder names. |
 | **Agent session detection** | What the close actions fire at — and, more importantly, what they must leave alone. |
 | **What a close action must not interrupt** | A pane running `npm install -g` is spared: killing Claude's own updater mid-rename breaks the install permanently, not just for now. |
+| **Tray menu — the per-agent grid picker** | The tray's *Steroids Mode* submenus must offer exactly the shapes the Settings dropdown offers, and spell them the same way. There is no shared list to rely on — Settings is PowerShell, the tray is a C# exe — so the suite holds the two tables side by side and fails if either drifts. It also checks that a submenu pick pins agent *and* shape, that the hotkeys pin neither, and that a pick never rewrites the settings file. |
 | **Settings** | Reading, saving, and surviving a config hand-edited into nonsense. |
 
 ### If something fails here
@@ -161,13 +162,24 @@ icon — a small 3×3 grid of white squares — appears next to the clock.
 Right-click the tray icon.
 
 - [ ] The menu opens
-- [ ] The first item reads **New Session - Claude Code** (or `- OpenAI Codex`, whichever is selected)
-- [ ] The second reads **Steroids Mode - 9x Claude Code**
-- [ ] **Arrange Terminals**, **Settings...**, and a **Quit** submenu are present
-- [ ] Hovering the icon shows a tooltip naming the selected agent
+- [ ] It leads with a block **per agent**: **New Session - Claude Code**, then **Steroids Mode - Claude Code** with a submenu arrow, a separator, then the same pair for **OpenAI Codex**
+- [ ] The **selected** agent (Settings) is the block on top, and it is the one showing **Ctrl+Alt+C**
+- [ ] Opening **Steroids Mode - Claude Code** lists five shapes: `2 x 2 - 4 sessions` through `4 x 4 - 16 sessions`
+- [ ] The configured shape (`3 x 3 - 9 sessions` out of the box) carries a **check mark**, and it is the only row showing **Ctrl+Alt+S** — and only under the selected agent
+- [ ] The Codex submenu lists the same five shapes, with the same one checked, but **no** hotkey on any row
+- [ ] **Arrange Terminals**, **Settings...**, and a **Quit** submenu are present below the blocks
+- [ ] Hovering the icon shows a tooltip naming the selected agent and the configured grid
 
-> The first two titles are re-read from the settings file every time the menu opens.
-> Later, after you change the agent, they must change with it.
+Now click **Steroids Mode - OpenAI Codex ▸ 2 x 2 - 4 sessions**:
+
+- [ ] **Four** windows open, running `codex`, whatever Settings says
+- [ ] Open Settings again — **Agent** is still Claude Code and **Grid** is still 3 x 3. A submenu pick is a one-off and must never write the file
+- [ ] Close the four windows
+
+> The whole block is rebuilt from the settings file every time the menu opens — not
+> just retitled, because its *order* and its check mark come from the file. Later,
+> after you change the agent in Settings, the blocks must swap places and the
+> hotkeys must move with them.
 
 ### 2. Settings window — **please spend the most time here**
 
@@ -429,6 +441,29 @@ Test-Path "$env:LOCALAPPDATA\claude-code-steroids\steroids-tray.exe"
 
 Windows also hides tray icons by default: check the `^` overflow area, and
 **Settings → Personalization → Taskbar → Other system tray icons**.
+
+**"An Application Control policy has blocked this file"** (or *"blocked by your
+organization's Device Guard policy"*) when the installer starts the tray app —
+Windows 11's **Smart App Control**, which refuses executables it has no reputation
+for. The tray app is compiled on your own machine at install time, so every install
+produces a file the world has never seen, and the first launch is exactly the one it
+stops. Confirm it with:
+
+```powershell
+(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy').VerifiedAndReputablePolicyState  # 1 = on
+Get-WinEvent -LogName 'Microsoft-Windows-CodeIntegrity/Operational' -MaxEvents 5 | Select TimeCreated, Id
+```
+
+Nothing else is affected — the context-menu entries are plain PowerShell and work
+either way, and the tray app is already registered to start at your next login. The
+same file is usually allowed once its cloud check comes back, so try again:
+
+```powershell
+Start-Process "$env:LOCALAPPDATA\claude-code-steroids\steroids-tray.exe"
+```
+
+The installer reports this and finishes rather than aborting; if you ever see it die
+with a stack trace here instead, that is a regression.
 
 **A script does nothing when clicked** — they run hidden, so run one by hand to see the
 error:

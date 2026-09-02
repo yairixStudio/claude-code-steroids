@@ -22,10 +22,17 @@ param(
     [ValidateSet('', 'claude', 'codex')]
     [string]$Agent = '',
 
-    # 0 means "whatever Settings says" -- PowerShell evaluates default values
-    # before the script body, so the config cannot be read here.
-    [ValidateRange(0, 8)][int]$Columns = 0,
-    [ValidateRange(0, 8)][int]$Rows = 0,
+    # A one-run grid shape, which is what the tray's "Steroids Mode" submenu
+    # passes when you pick 4 x 3 without changing your default. 0 means
+    # "whatever Settings says" -- PowerShell evaluates default values before the
+    # script body, so the config cannot be read here -- and so does anything
+    # outside 1..8. See Resolve-SteroidsGridDimension for why that is ignored
+    # rather than clamped, and why it is not a [ValidateRange].
+    #
+    # Neither one is written back. The hotkey and the right-click entries pass
+    # nothing and keep launching whatever Settings says.
+    [int]$Columns = 0,
+    [int]$Rows = 0,
 
     # Describe the launch instead of performing it — handy for checking what a
     # grid would run before nine agents land on your machine. Reports the shape
@@ -53,8 +60,8 @@ if ($Agent) { $config.Agent = $Agent }
 # parameter's validation attribute -- which is how assigning the agent object to
 # $agent used to throw [ValidateSet] and turn every launch into "was not found
 # on your PATH". The grid dimensions were the same trap waiting to be sprung.
-$gridColumns = if ($Columns -eq 0) { $config.Columns } else { $Columns }
-$gridRows    = if ($Rows    -eq 0) { $config.Rows }    else { $Rows }
+$gridColumns = Resolve-SteroidsGridDimension $Columns $config.Columns
+$gridRows    = Resolve-SteroidsGridDimension $Rows    $config.Rows
 
 $selected = Get-SteroidsAgent $config.Agent
 

@@ -23,15 +23,11 @@ Add-Type -AssemblyName System.Drawing
 
 $config = Get-SteroidsConfig
 
-# Column count, row count. Anything from 1x1 to 8x8 is legal in the config file;
-# these are the shapes that actually tile a screen sensibly.
-$gridChoices = @(
-    [pscustomobject]@{ Columns = 2; Rows = 2 },
-    [pscustomobject]@{ Columns = 3; Rows = 2 },
-    [pscustomobject]@{ Columns = 3; Rows = 3 },
-    [pscustomobject]@{ Columns = 4; Rows = 3 },
-    [pscustomobject]@{ Columns = 4; Rows = 4 }
-)
+# The shapes this dropdown offers live in steroids-common.ps1, because the tray's
+# "Steroids Mode" submenus offer the same list and the two must not drift apart.
+# This window sets the *default* -- what the hotkey and the right-click entries
+# launch; the submenus are one-off picks that leave it alone.
+$gridChoices = @(Get-SteroidsGridChoice)
 
 # ------------------------------------------------------------------ layout --
 
@@ -94,8 +90,7 @@ $gridBox.DropDownStyle = 'DropDownList'
 $gridBox.Location      = New-Object System.Drawing.Point(112, 82)
 $gridBox.Size          = New-Object System.Drawing.Size(220, 24)
 foreach ($choice in $gridChoices) {
-    [void]$gridBox.Items.Add(
-        ('{0} x {1}  -  {2} sessions' -f $choice.Columns, $choice.Rows, ($choice.Columns * $choice.Rows)))
+    [void]$gridBox.Items.Add((Get-SteroidsGridLabel $choice.Columns $choice.Rows))
 }
 $form.Controls.Add($gridBox)
 

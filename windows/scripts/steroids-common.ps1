@@ -108,6 +108,55 @@ function Read-SteroidsGridValue {
     return $n
 }
 
+# ------------------------------------------------------------ grid shapes --
+
+# Column count, row count. Anything from 1x1 to 8x8 is legal in the config file;
+# these are the shapes that actually tile a screen sensibly.
+#
+# One table feeds the Settings dropdown and every "Steroids Mode" submenu in the
+# tray -- so the two can never offer different lists. The tray is a C# exe and
+# cannot read this file, so it carries the same table in its own source and
+# run-tests.ps1 holds the two side by side; a shape added here and forgotten
+# there fails the suite rather than shipping as a menu that disagrees with
+# Settings. (macOS keeps one Swift array because its menu and its Settings
+# window are the same binary.)
+$script:SteroidsGridChoices = @(
+    [pscustomobject]@{ Columns = 2; Rows = 2 },
+    [pscustomobject]@{ Columns = 3; Rows = 2 },
+    [pscustomobject]@{ Columns = 3; Rows = 3 },
+    [pscustomobject]@{ Columns = 4; Rows = 3 },
+    [pscustomobject]@{ Columns = 4; Rows = 4 }
+)
+
+function Get-SteroidsGridChoice {
+    return $script:SteroidsGridChoices
+}
+
+# How a shape is written wherever a person reads it. Kept here so the Settings
+# dropdown and the tray submenu spell it the same way.
+function Get-SteroidsGridLabel {
+    param([int]$Columns, [int]$Rows)
+
+    return ('{0} x {1}  -  {2} sessions' -f $Columns, $Rows, ($Columns * $Rows))
+}
+
+# A grid dimension asked for by one launch. 0 means "follow Settings" -- and so
+# does anything outside 1..8, deliberately.
+#
+# These only ever arrive from our own tray menu, so a shape we do not recognise
+# is a bug in us, and the useful answer to it is the configured grid. Not a
+# clamp: 9 columns quietly becoming 8 is a shape nobody asked for. And not a
+# [ValidateRange] either, which was what stood here -- these scripts are
+# launched with -WindowStyle Hidden, where a parameter-binding failure is a menu
+# click that silently does nothing at all. macOS makes the same call for its
+# --grid flag, and for the same reason.
+function Resolve-SteroidsGridDimension {
+    param([int]$Requested, [int]$Configured)
+
+    if ($Requested -ge 1 -and $Requested -le 8) { return $Requested }
+    return $Configured
+}
+
 function Save-SteroidsConfig {
     param([psobject]$Config, [string]$Path = $script:SteroidsConfigPath)
 
