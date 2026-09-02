@@ -1,19 +1,24 @@
 // Claude Code — Steroids Mode (macOS)
-// Lean menu bar app: a small grid icon next to the clock/volume with three
-// actions, each also bound to a TRUE global hotkey (Carbon RegisterEventHotKey,
-// which beats the frontmost app's own shortcuts and needs no Accessibility):
+// Lean menu bar app: a small grid icon next to the clock/volume. The menu
+// leads with a block per agent — "New Session" plus a "Steroids Mode ▸"
+// submenu of grid shapes (2×2 … 4×4) — so one click launches any agent in any
+// grid without a detour through Settings. Three of those actions are also
+// bound to TRUE global hotkeys (Carbon RegisterEventHotKey, which beats the
+// frontmost app's own shortcuts and needs no Accessibility):
 //
 //   ⌃⌥C  New Session          (one Terminal window, in ~)
 //   ⌃⌥S  Steroids Mode        (a grid of sessions, in ~)
 //   ⌃⌥T  Arrange Terminals    (retile current desktop's windows)
 //
-// Which agent those sessions run — Claude Code or OpenAI Codex — is a setting,
-// not a hardcode. Settings… opens a small window that writes one JSON file:
+// Which agent and which grid the hotkeys use — Claude Code or OpenAI Codex,
+// 3×3 or something else — is a setting, not a hardcode. Settings… opens a
+// small window that writes one JSON file:
 //
 //   ~/.config/claude-code-steroids/config.json
 //
 // The shell scripts and the Finder Quick Actions read the same file, so one
-// switch there changes every entry point at once.
+// switch there changes every entry point at once. The submenu items are
+// one-run overrides (--agent / --grid on the command line) and never write it.
 //
 // Permissions policy: the app requests NOTHING at launch. The one permission
 // it needs — Automation → Terminal — is requested by macOS the first time an
@@ -123,6 +128,19 @@ struct Config {
     var spec: AgentSpec { return agentSpec(agent) }
     var sessionCount: Int { return columns * rows }
     var explicitPath: String { return paths[agent] ?? "" }
+}
+
+// MARK: - Grid shapes
+
+// Column count, row count. Anything from 1x1 to 8x8 is legal in the config
+// file; these are the shapes that actually tile a screen sensibly. One table
+// feeds both the Settings popup and every "Steroids Mode ▸" submenu, so the
+// two can never offer different lists.
+typealias GridShape = (columns: Int, rows: Int)
+let gridChoices: [GridShape] = [(2, 2), (3, 2), (3, 3), (4, 3), (4, 4)]
+
+func gridTitle(_ g: GridShape) -> String {
+    return "\(g.columns) × \(g.rows)  —  \(g.columns * g.rows) sessions"
 }
 
 // Where an agent actually lives. launchd starts this app with a bare PATH that
@@ -239,10 +257,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                      target: nil, action: nil)
     private let commandLabel = NSTextField(labelWithString: "")
 
-    // Column count, row count. Anything from 1x1 to 8x8 is legal in the config
-    // file; these are the shapes that actually tile a screen sensibly.
-    private let gridChoices: [(Int, Int)] = [(2, 2), (3, 2), (3, 3), (4, 3), (4, 4)]
-
     init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 480, height: 220),
@@ -269,8 +283,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         agentPicker.action = #selector(agentChanged)
         agentPicker.segmentDistribution = .fillEqually
 
-        for (c, r) in gridChoices {
-            gridPicker.addItem(withTitle: "\(c) × \(r)  —  \(c * r) sessions")
+        for g in gridChoices {
+            gridPicker.addItem(withTitle: gridTitle(g))
         }
         gridPicker.target = self
         gridPicker.action = #selector(gridChanged)
@@ -458,15 +472,28 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 // MARK: - Menu bar
 
+// What one "Steroids Mode ▸" submenu item launches. Stored as the item's
+// representedObject, so a single selector serves every agent × grid pair.
+struct GridLaunch {
+    let agent: String
+    let grid: GridShape
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem?
     let mainMenu = NSMenu()
     let permMenu = NSMenu()
     let autoItem = NSMenuItem()
-    let sessionItem = NSMenuItem()
-    let steroidsItem = NSMenuItem()
-    let closeAgentsItem = NSMenuItem()
     var settings: SettingsWindowController?
+
+    // The block at the top of the menu: per agent, "New Session — <agent>" and
+    // a "Steroids Mode — <agent> ▸" submenu with one item per grid shape.
+    // Rebuilt on every open (menuNeedsUpdate) rather than retitled, because
+    // its ORDER depends on Settings: the selected agent leads and is the one
+    // that shows the ⌃⌥C / ⌃⌥S hotkeys, and the configured grid wears the ✓ —
+    // so the menu still answers "what will the hotkey actually launch?" at a
+    // glance. Everything below the block is static.
+    var agentBlock: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ note: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -481,14 +508,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        // Titles name the selected agent and the configured grid size, so the
-        // menu answers "what will this actually launch?" without opening
-        // Settings. menuNeedsUpdate refreshes them on every open.
         mainMenu.delegate = self
-        configure(sessionItem, #selector(newSession), "c")
-        configure(steroidsItem, #selector(steroids), "s")
-        mainMenu.addItem(sessionItem)
-        mainMenu.addItem(steroidsItem)
+        rebuildAgentBlock()
         mainMenu.addItem(makeItem("Arrange Terminals", #selector(arrange), "t"))
         mainMenu.addItem(.separator())
 
@@ -517,9 +538,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // "Quit" submenu — closes Terminal windows cleanly (processes killed
         // first, so Terminal never shows a confirmation dialog).
         let quitMenu = NSMenu()
-        quitMenu.addItem(makeItem("Close Terminals on This Desktop", #selector(closeSpace), ""))
-        configure(closeAgentsItem, #selector(closeAgents), "")
-        quitMenu.addItem(closeAgentsItem)
+        quitMenu.addItem(makePlain("Close Terminals on This Desktop", #selector(closeSpace)))
+        quitMenu.addItem(makePlain("Close ALL Agent Sessions", #selector(closeAgents)))
         quitMenu.addItem(.separator())
         quitMenu.addItem(NSMenuItem(title: "Quit Menu Bar App",
                                     action: #selector(NSApplication.terminate(_:)),
@@ -529,14 +549,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainMenu.addItem(quitItem)
 
         item.menu = mainMenu
-        retitle()
     }
 
-    private func configure(_ item: NSMenuItem, _ action: Selector, _ key: String) {
-        item.action = action
-        item.keyEquivalent = key
-        if !key.isEmpty { item.keyEquivalentModifierMask = [.control, .option] }
-        item.target = self
+    private func rebuildAgentBlock() {
+        for old in agentBlock { mainMenu.removeItem(old) }
+
+        let config = Config.load()
+        let ordered = [config.spec] + agents.filter { $0.id != config.agent }
+        var block: [NSMenuItem] = []
+        for (i, spec) in ordered.enumerated() {
+            let selected = (i == 0)
+            let session = makeItem("New Session — \(spec.label)",
+                                   #selector(newSessionFor(_:)), selected ? "c" : "")
+            session.representedObject = spec.id
+            block.append(session)
+
+            let steroids = NSMenuItem(title: "Steroids Mode — \(spec.label)",
+                                      action: nil, keyEquivalent: "")
+            steroids.submenu = gridMenu(for: spec, config: config, hotkeyed: selected)
+            block.append(steroids)
+            block.append(.separator())
+        }
+        for (i, new) in block.enumerated() { mainMenu.insertItem(new, at: i) }
+        agentBlock = block
+    }
+
+    // A hand-edited config can name a shape the table does not offer (5×5,
+    // say). It still gets a row — first, with the ✓ — because it is what ⌃⌥S
+    // will launch, and a menu that hides that is a menu that lies.
+    private func gridMenu(for spec: AgentSpec, config: Config, hotkeyed: Bool) -> NSMenu {
+        let menu = NSMenu()
+        let configured: GridShape = (config.columns, config.rows)
+        var shapes = gridChoices
+        if !shapes.contains(where: { $0 == configured }) { shapes.insert(configured, at: 0) }
+        for g in shapes {
+            let isDefault = (g == configured)
+            let it = makeItem(gridTitle(g), #selector(steroidsFor(_:)),
+                              (isDefault && hotkeyed) ? "s" : "")
+            it.representedObject = GridLaunch(agent: spec.id, grid: g)
+            it.state = isDefault ? .on : .off
+            menu.addItem(it)
+        }
+        return menu
     }
 
     private func makeItem(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {
@@ -552,17 +606,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return it
     }
 
-    private func retitle() {
-        let config = Config.load()
-        let label = config.spec.label
-        sessionItem.title = "New Session — \(label)"
-        steroidsItem.title = "Steroids Mode — \(config.sessionCount)× \(label)"
-        closeAgentsItem.title = "Close ALL Agent Sessions"
-    }
-
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === mainMenu {
-            retitle()
+            rebuildAgentBlock()
             return
         }
         guard menu === permMenu else { return }
@@ -630,8 +676,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings?.show()
     }
 
-    @objc func newSession()  { runScript("claude-session.sh") }
-    @objc func steroids()    { runScript("steroids-grid.sh") }
+    // Menu items pin agent and grid on the command line; the hotkeys pass
+    // nothing and get whatever Settings says. Same scripts either way.
+    @objc func newSessionFor(_ sender: NSMenuItem) {
+        guard let agent = sender.representedObject as? String else { return }
+        runScript("claude-session.sh", ["--agent", agent])
+    }
+    @objc func steroidsFor(_ sender: NSMenuItem) {
+        guard let launch = sender.representedObject as? GridLaunch else { return }
+        runScript("steroids-grid.sh", ["--agent", launch.agent,
+                                       "--grid", "\(launch.grid.columns)x\(launch.grid.rows)"])
+    }
     @objc func arrange()     { runScript("arrange-terminals.sh") }
     @objc func closeSpace()  { runScript("close-terminals.sh", ["space"]) }
     @objc func closeAgents() { runScript("close-terminals.sh", ["agents"]) }

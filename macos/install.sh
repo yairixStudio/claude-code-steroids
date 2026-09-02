@@ -122,8 +122,8 @@ if command -v swiftc >/dev/null 2>&1; then
 	<key>CFBundleName</key>            <string>Claude Steroids</string>
 	<key>CFBundleDisplayName</key>     <string>Claude Steroids</string>
 	<key>CFBundleIdentifier</key>      <string>com.yairixstudio.claude-steroids</string>
-	<key>CFBundleVersion</key>         <string>2.1</string>
-	<key>CFBundleShortVersionString</key> <string>2.1</string>
+	<key>CFBundleVersion</key>         <string>2.2</string>
+	<key>CFBundleShortVersionString</key> <string>2.2</string>
 	<key>CFBundleExecutable</key>      <string>steroids-menubar</string>
 	<key>CFBundlePackageType</key>     <string>APPL</string>
 	<key>LSUIElement</key>             <true/>
@@ -223,8 +223,11 @@ How to use:
   • Right-click any folder in Finder → Quick Actions →
         "Open in Claude"                 (one session)
         "Open in Claude — Steroids (9×)" (a grid of sessions)
-  • Menu bar: a small grid icon (⊞) next to the clock with the three actions.
-    It starts automatically at every login.
+  • Menu bar: a small grid icon (⊞) next to the clock. Per agent it offers
+    "New Session" and a "Steroids Mode ▸" submenu — pick 2×2, 3×2, 3×3, 4×3
+    or 4×4 and that grid opens right away, whatever Settings says. The agent
+    selected in Settings is listed first, and its default grid wears a ✓.
+    Starts automatically at every login.
   • Global hotkeys (work from any app, either Option/Control key):
         ⌃⌥C  New Session          (one window, in ~)
         ⌃⌥S  Steroids Mode        (a grid of sessions, in ~)

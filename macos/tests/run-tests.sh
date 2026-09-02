@@ -123,10 +123,10 @@ section 'Settings'
 # ===========================================================================
 print -r -- "#!/bin/zsh
 source ${(q)SCRIPTS}/steroids-config.sh
-steroids_load_config \"\${1:-}\"
+steroids_load_config \"\${1:-}\" \"\${2:-}\"
 print -r -- \"\$STEROIDS_AGENT|\$STEROIDS_COLS|\$STEROIDS_ROWS|\$STEROIDS_YOLO\"" > "$TMPDIR_TESTS/cfg.sh"
 
-read_cfg() { STEROIDS_CONFIG="$CONFIG" /bin/zsh "$TMPDIR_TESTS/cfg.sh" "$1" }
+read_cfg() { STEROIDS_CONFIG="$CONFIG" /bin/zsh "$TMPDIR_TESTS/cfg.sh" "$1" "$2" }
 
 print -r -- '{"version":1,"agent":"codex","columns":4,"rows":2,"yolo":false}' > "$CONFIG"
 assert_eq 'a complete file is read field for field' 'codex|4|2|0' "$(read_cfg)"
@@ -147,22 +147,46 @@ assert_eq 'an override pins the agent'            'claude|2|2|0' "$(read_cfg cla
 assert_eq 'an override leaves grid and YOLO alone' 'codex|2|2|0'  "$(read_cfg codex)"
 assert_eq 'an unknown override is ignored'         'codex|2|2|0'  "$(read_cfg martian)"
 
+# --grid pins the shape for one run — the menu bar submenu — and nothing else.
+assert_eq 'a grid override pins the shape'          'codex|4|3|0'  "$(read_cfg '' 4x3)"
+assert_eq 'a grid override accepts a capital X'     'codex|4|4|0'  "$(read_cfg '' 4X4)"
+assert_eq 'agent and grid overrides combine'        'claude|3|3|0' "$(read_cfg claude 3x3)"
+# It can only come from our own menu, so a malformed one is a bug — ignore it
+# rather than clamp it into some shape nobody asked for.
+for junk in '9x9' '0x3' '3x' 'x3' '33' '3×3' 'big' '3x3x3'; do
+  assert_eq "a malformed grid override is ignored: $junk" 'codex|2|2|0' "$(read_cfg '' "$junk")"
+done
+
 # ===========================================================================
 section 'Argument parsing'
 # ===========================================================================
 print -r -- "#!/bin/zsh
 source ${(q)SCRIPTS}/steroids-config.sh
 steroids_parse_args \"\$@\"
-print -r -- \"\$STEROIDS_DIR|\$STEROIDS_AGENT_OVERRIDE\"" > "$TMPDIR_TESTS/args.sh"
+print -r -- \"\$STEROIDS_DIR|\$STEROIDS_AGENT_OVERRIDE|\$STEROIDS_GRID_OVERRIDE\"" > "$TMPDIR_TESTS/args.sh"
 args() { /bin/zsh "$TMPDIR_TESTS/args.sh" "$@" }
 
-assert_eq 'folder only'          "/tmp/x|"       "$(args /tmp/x)"
-assert_eq 'folder then --agent'  "/tmp/x|codex"  "$(args /tmp/x --agent codex)"
-assert_eq '--agent= form'        "/tmp/x|claude" "$(args /tmp/x --agent=claude)"
-assert_eq 'no folder means home' "$HOME|"        "$(args)"
+assert_eq 'folder only'          "/tmp/x||"       "$(args /tmp/x)"
+assert_eq 'folder then --agent'  "/tmp/x|codex|"  "$(args /tmp/x --agent codex)"
+assert_eq '--agent= form'        "/tmp/x|claude|" "$(args /tmp/x --agent=claude)"
+assert_eq 'no folder means home' "$HOME||"        "$(args)"
 # Finder hands a Quick Action every selected item; only the first may win, or a
 # multi-select would open a swarm per file.
-assert_eq 'extra items are ignored' "/tmp/a|codex" "$(args /tmp/a /tmp/b /tmp/c --agent codex)"
+assert_eq 'extra items are ignored' "/tmp/a|codex|" "$(args /tmp/a /tmp/b /tmp/c --agent codex)"
+# The menu bar submenu passes no folder at all — just the two pins.
+assert_eq 'menu bar form: pins only'  "$HOME|codex|4x3" "$(args --agent codex --grid 4x3)"
+assert_eq '--grid= form'              "/tmp/x||2x2"     "$(args /tmp/x --grid=2x2)"
+# A flag with no value used to make `shift 2` fail and the loop spin forever.
+# `timeout` is not on a stock macOS, so run it in the background and reap.
+/bin/zsh "$TMPDIR_TESTS/args.sh" /tmp/x --agent > "$TMPDIR_TESTS/dangling.out" 2>/dev/null &
+dangling_pid=$!
+for _ in {1..50}; do kill -0 $dangling_pid 2>/dev/null || break; sleep 0.1; done
+if kill -0 $dangling_pid 2>/dev/null; then
+  kill $dangling_pid 2>/dev/null
+  bad 'a dangling flag terminates' 'parse_args looped for 5s on a trailing --agent'
+else
+  assert_eq 'a dangling flag terminates' "/tmp/x||" "$(cat "$TMPDIR_TESTS/dangling.out")"
+fi
 
 # ===========================================================================
 section 'Grid generation'
@@ -188,6 +212,19 @@ out="$(STEROIDS_CONFIG="$CONFIG" /bin/zsh "$TMPDIR_TESTS/grid.sh" /tmp --agent c
 case "$out" in
   *codex*) ok 'the grid honours --agent codex' ;;
   *)       bad 'the grid honours --agent codex' "no codex in the generated AppleScript" ;;
+esac
+
+# The menu bar submenu: Settings says 3×3, the click says 4×4 — the click wins
+# for this run, and the file is left exactly as it was.
+before="$(cat "$CONFIG")"
+out="$(STEROIDS_CONFIG="$CONFIG" /bin/zsh "$TMPDIR_TESTS/grid.sh" --agent claude --grid 4x4 2>/dev/null)"
+got="$(print -r -- "$out" | grep -o 'repeat with idx from 0 to [0-9-]*' | grep -o '[0-9-]*$')"
+assert_eq '--grid 4x4 builds 16 panes over a 3x3 setting' "15" "$got"
+assert_eq '--grid 4x4 columns reach the AppleScript' "1" "$(print -r -- "$out" | grep -c 'idx mod 4')"
+assert_eq '--grid does not write the settings file' "$before" "$(cat "$CONFIG")"
+case "$out" in
+  *"cd '$HOME'"*) ok '--grid with no folder opens in home' ;;
+  *)              bad '--grid with no folder opens in home' "no cd to \$HOME in: ${out//$'\n'/ ; }" ;;
 esac
 
 # ===========================================================================

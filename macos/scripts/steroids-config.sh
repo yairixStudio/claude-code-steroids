@@ -29,15 +29,23 @@ steroids_agent_yolo()   {
 
 # ------------------------------------------------------------------- args --
 # Every entry point passes a folder; the per-agent Quick Actions add
-# "--agent claude" or "--agent codex" to pin one regardless of the setting.
-# Sets STEROIDS_DIR and STEROIDS_AGENT_OVERRIDE.
+# "--agent claude" or "--agent codex" to pin one regardless of the setting, and
+# the menu bar's per-agent "Steroids Mode ▸" submenu adds "--grid 4x3" to pin a
+# grid shape for this one run (COLUMNSxROWS, each 1–8) without touching the
+# default in Settings.
+# Sets STEROIDS_DIR, STEROIDS_AGENT_OVERRIDE and STEROIDS_GRID_OVERRIDE.
 steroids_parse_args() {
 	STEROIDS_DIR=""
 	STEROIDS_AGENT_OVERRIDE=""
+	STEROIDS_GRID_OVERRIDE=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
-			--agent)   STEROIDS_AGENT_OVERRIDE="$2"; shift 2 ;;
+			# A flag that is the last word on the line has no value; a bare
+			# `shift 2` would fail there and leave $# where it was — forever.
+			--agent)   STEROIDS_AGENT_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
 			--agent=*) STEROIDS_AGENT_OVERRIDE="${1#--agent=}"; shift ;;
+			--grid)    STEROIDS_GRID_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+			--grid=*)  STEROIDS_GRID_OVERRIDE="${1#--grid=}"; shift ;;
 			# First non-flag wins. Finder hands a Quick Action every selected
 			# item, and opening nine sessions per file you happened to have
 			# highlighted is nobody's intention.
@@ -130,16 +138,20 @@ steroids_applescript_quote() {
 }
 
 # -------------------------------------------------------------------- load --
-# steroids_load_config [<agent-id>]
+# steroids_load_config [<agent-id>] [<COLSxROWS>]
 #
 # Sets: STEROIDS_AGENT STEROIDS_LABEL STEROIDS_YOLO STEROIDS_COLS STEROIDS_ROWS
 #       STEROIDS_BIN STEROIDS_CMD (a ready-to-run, shell-quoted command line)
 #
-# The optional agent id pins one agent for this run. Only the agent is pinned —
-# grid size and the autonomy toggle still come from Settings, because those are
-# preferences about how you work, not about which CLI you picked.
+# The optional agent id pins one agent for this run; the optional grid shape
+# pins the grid. Both are one-run overrides that leave the settings file alone,
+# so the hotkey keeps launching whatever Settings says. The autonomy toggle is
+# never overridden — that is a preference about how you work, not about what
+# you reached for. A malformed grid ("3x", "9x9", "big") is ignored, not
+# clamped, because it can only come from our own menu and a wrong shape
+# silently launched is worse than the default.
 steroids_load_config() {
-  local override="${1:-}"
+  local override="${1:-}" grid="${2:-}"
   STEROIDS_AGENT=claude
   STEROIDS_YOLO=1
   STEROIDS_COLS=3
@@ -156,6 +168,14 @@ steroids_load_config() {
       path)  configured_path="$value" ;;
     esac
   done < <(_steroids_read_config "$override")
+
+  # Glob, not regex: this runs under launchd's LANG-less C locale, where a
+  # multi-byte "×" inside a regex bracket is two unrelated bytes.
+  case "$grid" in
+    [1-8]x[1-8]|[1-8]X[1-8])
+      STEROIDS_COLS="${grid%[xX]*}"
+      STEROIDS_ROWS="${grid#*[xX]}" ;;
+  esac
 
   STEROIDS_LABEL="$(steroids_agent_label "$STEROIDS_AGENT")"
   STEROIDS_BIN="$(steroids_resolve_bin "$configured_path" "$(steroids_agent_bin "$STEROIDS_AGENT")")"

@@ -38,7 +38,27 @@ from Settings, because those are preferences about how you work rather than
 about which agent you reached for.
 
 On macOS it also installs a lean **menu bar app** — a small grid icon (⊞) next to the
-clock, started at every login — with three actions, each also on a **true global hotkey**
+clock, started at every login. Its menu leads with a block **per agent**: *New Session*
+and a **Steroids Mode ▸** submenu where you pick the grid on the spot —
+
+```
+   New Session — Claude Code            ⌃⌥C
+   Steroids Mode — Claude Code        ▸ │ 2 × 2  —  4 sessions
+                                        │ 3 × 2  —  6 sessions
+                                        │ 3 × 3  —  9 sessions  ✓  ⌃⌥S
+                                        │ 4 × 3  —  12 sessions
+                                        │ 4 × 4  —  16 sessions
+   ─────────────────────────────────
+   New Session — OpenAI Codex
+   Steroids Mode — OpenAI Codex       ▸ │ 2 × 2 … 4 × 4
+   ─────────────────────────────────
+   Arrange Terminals                    ⌃⌥T
+```
+
+Click *4 × 3* under Codex and twelve Codex sessions open, whatever Settings says —
+the submenu is a one-off, it never rewrites your defaults. The agent selected in
+Settings is listed first, and its default grid wears the ✓, so the menu always shows
+what the hotkeys will do. Three of the actions are also on a **true global hotkey**
 that works from any app:
 
 | Hotkey | Action |
@@ -157,7 +177,7 @@ hotkey press already uses the new value.
 | | |
 |---|---|
 | **Agent** | **Claude Code** or **OpenAI Codex**. A live ✓ shows the path it resolved to, or a ✗ with the one-line install command if the CLI isn't there yet. |
-| **Grid** | 2×2 through 4×4. The file accepts anything up to 8×8 if you'd rather type it. |
+| **Grid** | 2×2 through 4×4 — the default for the ⌃⌥S hotkey and the right-click grid entries. The file accepts anything up to 8×8 if you'd rather type it. The menu bar's **Steroids Mode ▸** submenu offers the same shapes as one-off picks that leave this default alone. |
 | **Autonomy** | *Skip approval prompts*, on or off. **Off passes no flag at all**, so each CLI behaves exactly as it does when you run it yourself. |
 
 The choice reaches the hotkeys, the menu/tray items, and the two **neutral**

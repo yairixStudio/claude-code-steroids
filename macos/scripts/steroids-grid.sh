@@ -1,11 +1,13 @@
 #!/bin/zsh
-# steroids-grid.sh [<directory>] [--agent claude|codex]
+# steroids-grid.sh [<directory>] [--agent claude|codex] [--grid COLSxROWS]
 # Opens a grid of agent sessions — Claude Code or OpenAI Codex, whichever is
 # selected in Settings — all running inside the given directory. The grid is
 # 3x3 by default; Settings can make it anything from 1x1 to 8x8.
 # Defaults to $HOME if no directory is given. --agent pins one agent for this
-# run, which is what the per-agent Quick Actions pass; grid size and the
-# autonomy toggle always come from Settings.
+# run, which is what the per-agent Quick Actions pass; --grid (e.g. 4x3) pins
+# a shape for this run, which is what the menu bar's per-agent "Steroids
+# Mode ▸" submenu passes. Neither touches Settings, and the autonomy toggle
+# always comes from there.
 #
 # Mirrors the working "Launch Claude" Quick Action: the AppleScript is built with
 # the values baked in (no argv / stdin-args), which is what works under the
@@ -20,7 +22,7 @@ if ! source "${0:A:h}/steroids-config.sh" 2>/dev/null; then
 	exit 1
 fi
 steroids_parse_args "$@"
-steroids_load_config "$STEROIDS_AGENT_OVERRIDE"
+steroids_load_config "$STEROIDS_AGENT_OVERRIDE" "$STEROIDS_GRID_OVERRIDE"
 
 DIR="$STEROIDS_DIR"
 
